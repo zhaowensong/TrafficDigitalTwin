@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Perception Layer - Data Alignment</title>
+    
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div id="loading" class="loading-overlay">
+        <div class="spinner"></div>
+        <h2>SYSTEM INITIALIZING</h2>
+        <p>Loading Spatial & Temporal Data...</p>
+    </div>
+
+    <div class="sidebar">
+        <div class="header">
+            <h1>Overall</h1>
+            
+            <div class="search-section">
+                <div class="search-container">
+                    <input type="text" id="search-input" placeholder="Search ID..." autocomplete="off">
+                    <button id="search-btn" class="cyber-btn-small">GO</button>
+                    <button id="clear-search-btn" class="cyber-btn-small" title="Clear Markers">✕</button>
+                </div>
+                
+                <div class="search-mode">
+                    <input type="checkbox" id="keep-markers-check" checked>
+                    <label for="keep-markers-check">Keep Previous Markers</label>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>📈 Temporal Modality</h2>
+            <div class="chart-container">
+                <canvas id="energyChart"></canvas>
+            </div>
+        </div>
+        
+        <div class="card details-card">
+            <h2>📍 Spatial Metadata</h2>
+            <div class="stat-row">
+                <div><span class="label">Station ID</span> <span id="selected-id" class="value highlight">--</span></div>
+                <div><span class="label">Total Nodes</span> <span id="total-stations" class="value">--</span></div>
+            </div>
+            <div id="station-details" class="details-content">
+                <p class="placeholder-text">Waiting for selection...</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="prediction-panel" class="sidebar-right">
+        <div class="header">
+            <h1>Traffic Prediction</h1>
+            <button id="close-pred-btn" class="cyber-btn-small">✕</button>
+        </div>
+        <div class="details-content">
+            <div class="stat-row" style="margin-bottom: 20px;">
+                <div><span class="label">Target Station ID</span> <span id="pred-station-id" class="value highlight" style="color: #f39c12;">--</span></div>
+            </div>
+            
+            <div class="chart-container" style="height: 250px; position: relative;">
+                <canvas id="predictionChart"></canvas>
+            </div>
+
+            <!-- <div class="legend-box" style="margin-top: 20px; font-size: 0.9em; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 4px;">
+                <div style="display:flex; align-items:center; margin-bottom:8px;">
+                    <span style="display:inline-block; width:12px; height:12px; background:#00cec9; margin-right:10px; border-radius:50%;"></span>
+                    <span>Real Data (Observed)</span>
+                </div>
+                <div style="display:flex; align-items:center;">
+                    <span style="display:inline-block; width:12px; height:12px; background:#f39c12; margin-right:10px; border-radius:50%;"></span>
+                    <span>AI Prediction (Model + POI)</span>
+                </div>
+            </div> -->
+
+            <div id="site-map-container" style="margin-top: 20px; display: none; border-top: 1px solid rgba(243, 156, 18, 0.3); padding-top: 15px;">
+                <h3 style="font-size: 13px; color: #f39c12; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px;">
+                    <span class="icon">📍</span> Optimal Site Analysis
+                </h3>
+                
+                <div style="background: rgba(0,0,0,0.5); padding: 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: center; align-items: center;">
+                    <img id="site-map-img" src="" alt="LSI Site Map" style="width: 75%; border-radius: 4px; box-shadow: 0 0 10px rgba(0,0,0,0.5); display: block;">
+                </div>
+                
+                <div id="site-explanation" class="cyber-explanation" style="display: none;"></div>
+                
+                <p style="font-size: 0.7em; color: #aaa; margin-top: 8px; line-height: 1.4;">
+                    * Heatmap calculated via spatial windowing.<br>
+                    <span style="color:#2ecc71;">Green = High LSI (Stable)</span> | <span style="color:#e74c3c;">Red = High Volatility</span>
+                </p>
+            </div>
+
+            <p style="font-size: 0.75em; color: #666; margin-top: 20px; line-height: 1.4; border-top: 1px solid #333; padding-top: 10px;">
+                * Powered by <strong>Hierarchical Flow Matching V4</strong>.<br>
+                Utilizes Multi-modal Spatial Embeddings (POI, Satellite, Coordinates) for context-aware traffic forecasting.
+            </p>
+        </div>
+    </div>
+
+    <div id="energy-control-panel" class="sidebar-right" style="border-color: #2ecc71; box-shadow: -5px 0 20px rgba(46, 204, 113, 0.1);">
+        <div class="header">
+            <h1 style="color: #2ecc71;">Energy Control</h1>
+            <button id="close-control-btn" class="cyber-btn-small" style="color:#2ecc71; border-color:#2ecc71;">✕</button>
+        </div>
+        <div class="details-content">
+            <div class="stat-row" style="margin-bottom: 20px;">
+                <div><span class="label">Target Station ID</span> <span id="energy-station-id" class="value highlight" style="color: #2ecc71;">--</span></div>
+            </div>
+    
+            <h3 style="font-size: 12px; color: #aaaaaa; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px; font-weight: normal;">
+                <span style="color: #00cec9; margin-right: 5px;">■</span> Control Strategy Simulation
+            </h3>
+            <div class="chart-container" style="height: 200px; position: relative; margin-bottom: 15px;">
+                <canvas id="energyControlMainChart"></canvas>
+            </div>
+    
+            <h3 style="font-size: 12px; color: #aaaaaa; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px; font-weight: normal;">
+                <span style="color: #2ecc71; margin-right: 5px;">■</span> Hourly Energy Delta
+            </h3>
+            <div class="chart-container" style="height: 120px; position: relative;">
+                <canvas id="energyControlDeltaChart"></canvas>
+            </div>
+
+            <div id="energy-explanation" class="cyber-explanation" style="display: none; border-left-color: #2ecc71; margin-top: 20px;"></div>
+        </div>
+    </div>
+
+    <button id="toggle-left-btn" class="panel-toggle-btn left-toggle">◀</button>
+    <button id="toggle-right-btn" class="panel-toggle-btn right-toggle">▶</button>
+    <div class="main-content">
+        <div class="controls-container">
+            <button id="view-toggle" class="cyber-btn">
+                <span class="icon">👁️</span> View: 3D
+            </button>
+            <button id="data-toggle" class="cyber-btn">
+                <span class="icon">📡</span> Toggle Data
+            </button>
+            
+            <button id="predict-toggle" class="cyber-btn" style="border-color: #f39c12; color: #f39c12;">
+                <span class="icon">🔮</span> Prediction Mode
+            </button>
+
+            <button id="control-toggle" class="cyber-btn" style="border-color: #2ecc71; color: #2ecc71;">
+                <span class="icon">🔋</span> Energy Control
+            </button>
+
+            <div class="filter-wrapper">
+                <button id="filter-btn" class="cyber-btn">
+                    <span class="icon">🌪️</span> Filter Volatility
+                </button>
+                <div id="filter-menu" class="filter-menu"></div>
+            </div>
+        </div>
+
+        <div class="time-panel">
+            <button id="play-btn" class="cyber-btn play-control">▶</button>
+            <div class="slider-wrapper">
+                <input type="range" id="time-slider" min="0" max="671" value="0" step="1">
+                <div class="slider-ticks">
+                    <span>Day 1</span><span>Day 7</span><span>Day 14</span><span>Day 21</span><span>Day 28</span>
+                </div>
+            </div>
+            <div id="time-display" class="digital-clock" style="min-width: 170px;">Day 01 - 00:00</div>
+        </div>
+
+        <div id="map"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
