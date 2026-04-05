@@ -9,34 +9,34 @@
 
 ## 2. 用户实体数据接入 (user-entity-modeling)
 
-- [ ] 2.1 解压 user_data_shanghai_v1.zip 到 data/user_data/ 目录
-- [ ] 2.2 分析 trajectories.json 数据结构和字段
-- [ ] 2.3 分析 user_profiles_en.json 画像数据结构
-- [ ] 2.4 验证用户轨迹中的基站ID与 base2info_extended.json 匹配
-- [ ] 2.5 测试数据加载性能（~100MB JSON）
-- [ ] 2.6 如需优化，实现分批加载或索引机制
+- [x] 2.1 解压 user_data_shanghai_v1.zip 到 data/user_data/ 目录
+- [x] 2.2 分析 trajectories.json 数据结构和字段
+- [x] 2.3 分析 user_profiles_en.json 画像数据结构
+- [x] 2.4 验证用户轨迹中的基站ID与 base2info_extended.json 匹配
+- [x] 2.5 测试数据加载性能（~100MB JSON）
+- [x] 2.6 如需优化，实现分批加载或索引机制
 
 ## 3. APP分类模型 (app-traffic-model)
 
-- [ ] 3.1 分析用户数据中的 APP 使用记录，提取分类特征
-- [ ] 3.2 创建 app_models.py 定义APP分类模型
-- [ ] 3.3 定义视频类APP模型（抖音、B站）：下行突发、5-10Mbps
-- [ ] 3.4 定义社交类APP模型（微信、微博）：上下均衡、0.5-2Mbps
-- [ ] 3.5 定义游戏类APP模型（王者荣耀）：低延迟、1-3Mbps
-- [ ] 3.6 定义浏览类APP模型（新闻、购物）：下行中等、2-5Mbps
-- [ ] 3.7 实现APP流量统计与分类函数
+- [x] 3.1 分析用户数据中的 APP 使用记录，提取分类特征
+- [x] 3.2 创建 app_models.py 定义APP分类模型
+- [x] 3.3 定义视频类APP模型（抖音、B站）：下行突发、5-10Mbps
+- [x] 3.4 定义社交类APP模型（微信、微博）：上下均衡、0.5-2Mbps
+- [x] 3.5 定义游戏类APP模型（王者荣耀）：低延迟、1-3Mbps
+- [x] 3.6 定义浏览类APP模型（新闻、购物）：下行中等、2-5Mbps
+- [x] 3.7 实现APP流量统计与分类函数
 
 ## 4. 数据访问层 (data-access-layer)
 
-- [ ] 4.1 创建 data_manager.py DataManager 类
-- [ ] 4.2 实现基站数据加载接口（保持现有 NPZ_DATA_CACHE）
-- [ ] 4.3 实现扩展基站属性访问接口
-- [ ] 4.4 实现用户轨迹数据加载接口
-- [ ] 4.5 实现用户画像数据加载接口（结构化 + 文本）
-- [ ] 4.6 实现用户查询接口（按区域、按ID、按基站）
-- [ ] 4.7 添加数据加载错误处理
-- [ ] 4.8 重构 server.py 使用 DataManager
-- [ ] 4.9 新增用户数据相关 API 端点
+- [x] 4.1 创建 data_manager.py DataManager 类
+- [x] 4.2 实现基站数据加载接口（保持现有 NPZ_DATA_CACHE）
+- [x] 4.3 实现扩展基站属性访问接口
+- [x] 4.4 实现用户轨迹数据加载接口
+- [x] 4.5 实现用户画像数据加载接口（结构化 + 文本）
+- [x] 4.6 实现用户查询接口（按区域、按ID、按基站）
+- [x] 4.7 添加数据加载错误处理
+- [x] 4.8 重构 server.py 使用 DataManager
+- [x] 4.9 新增用户数据相关 API 端点
 
 ## 5. Docker部署修复 (docker-deployment)
 
@@ -62,9 +62,9 @@
 
 ## 7. 集成验证与文档
 
-- [ ] 7.1 验证所有现有 API 正常工作
-- [ ] 7.2 验证扩展后的基站数据可正常访问
-- [ ] 7.3 验证用户轨迹数据可通过API访问
-- [ ] 7.4 验证用户画像数据可通过API访问
+- [x] 7.1 验证所有现有 API 正常工作
+- [x] 7.2 验证扩展后的基站数据可正常访问
+- [x] 7.3 验证用户轨迹数据可通过API访问
+- [x] 7.4 验证用户画像数据可通过API访问
 - [ ] 7.5 验证 C/S 架构部署（服务器后端 + 桌面客户端）
-- [ ] 7.6 提交代码到 GitHub（解决 Mapbox Token 和大文件问题）
+- [x] 7.6 提交代码到 GitHub（解决 Mapbox Token 和大文件问题）
