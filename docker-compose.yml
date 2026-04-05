@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  traffic-server:
+    build: .
+    ports:
+      - "7860:7860"
+    volumes:
+      # Mount data directory
+      - ./data:/app/data:ro
+      # Mount model file
+      - ./best_corr_model.pt:/app/best_corr_model.pt:ro
+    environment:
+      - MAPBOX_ACCESS_TOKEN=${MAPBOX_ACCESS_TOKEN}
+      - PORT=7860
+      - HOST=0.0.0.0
+      - DEBUG=false
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:7860/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

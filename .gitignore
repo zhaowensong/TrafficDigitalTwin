@@ -3,3 +3,8 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Electron
+electron-client/node_modules/
+electron-client/portable/
+electron-client/dist/

@@ -26,7 +26,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, 'data')) 
 
 # File path configurations
-JSON_PATH = os.path.join(DATA_DIR, 'base2info.json')
+JSON_PATH = os.path.join(DATA_DIR, 'base2info_extended.json')
 TRAFFIC_PATH = os.path.join(DATA_DIR, 'bs_record_energy_normalized_sampled.npz')
 SPATIAL_PATH = os.path.join(DATA_DIR, 'spatial_features.npz')
 MODEL_PATH = os.path.join(BASE_DIR, 'best_corr_model.pt') 

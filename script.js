@@ -2,7 +2,7 @@
 // 1. Config (Focused on Shanghai)
 // ==========================================
 const CONFIG = {
-    MAPBOX_TOKEN: 'YOUR_MAPBOX_TOKEN_HERE', // Replace with your Mapbox token
+    MAPBOX_TOKEN: 'YOUR_MAPBOX_TOKEN_HERE',
     API_BASE: 'http://127.0.0.1:5000/api', // Local
     // API_BASE: '/api',  // Online
     
@@ -364,7 +364,8 @@ function updateGeoJSONData(map, stations, mode = 'avg', timeIndex = 0) {
 
     stations.forEach(s => {
         const lng = s.loc[0], lat = s.loc[1];
-        let valH = (mode === 'avg') ? (s.val_h || 0) : ((s.vals && s.vals[timeIndex]) !== undefined ? s.vals[timeIndex] : 0);
+        // Note: vals removed from API response to reduce size, use val_h (avg) for all modes
+        let valH = s.val_h || 0;
         let valC = (s.val_c !== undefined) ? s.val_c : 0;
         
         const props = { id: s.id, load_avg: valH, load_std: valC };

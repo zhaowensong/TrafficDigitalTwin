@@ -19,5 +19,10 @@ COPY --chown=user . /app
 # 6. Expose port 7860
 EXPOSE 7860
 
-# 7. Execute the Flask server script
-CMD ["python", "server.py"]
+# 7. Set environment variables
+ENV PORT=7860
+ENV HOST=0.0.0.0
+ENV PYTHONUNBUFFERED=1
+
+# 8. Execute the Flask server script with correct host and port
+CMD ["python", "-c", "from server import app; import os; app.run(host=os.environ.get('HOST', '0.0.0.0'), port=int(os.environ.get('PORT', 7860)))"]
