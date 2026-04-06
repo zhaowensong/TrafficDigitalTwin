@@ -252,11 +252,6 @@ if __name__ == '__main__':
     print(f"Monitoring Data Directory: {DATA_DIR}")
     if dm.user_data_dir:
         print(f"User Data Directory: {dm.user_data_dir}")
-    print(f"Server running on http://127.0.0.1:{port}")
-    app.run(debug=True, port=port)
-
-# FOR ONLINE
-# if __name__ == '__main__':
-#     print(f"Monitoring Data Directory: {DATA_DIR}")
-#     print("Server running on port 7860...")
-#     app.run(host='0.0.0.0', port=7860)
+    host = os.environ.get('HOST', '127.0.0.1')
+    print(f"Server running on http://{host}:{port}")
+    app.run(host=host, debug=True, port=port)
