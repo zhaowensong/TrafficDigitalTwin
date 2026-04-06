@@ -136,6 +136,54 @@
         </div>
     </div>
 
+    <div id="user-panel" class="sidebar-right user-panel-theme" style="border-color: #a29bfe; box-shadow: -5px 0 20px rgba(162, 155, 254, 0.1);">
+        <div class="header">
+            <h1 style="background: linear-gradient(to right, #a29bfe, #6c5ce7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">User Analytics</h1>
+            <button id="close-user-btn" class="cyber-btn-small" style="color:#a29bfe; border-color:#a29bfe;">✕</button>
+        </div>
+        <div class="details-content" style="flex: 1; overflow-y: auto;">
+            <!-- Overview Stats -->
+            <div id="user-overview" class="user-section">
+                <h3 class="section-title" style="color: #a29bfe;"><span class="icon">📊</span> Overview</h3>
+                <div id="user-stats-content" class="stats-grid">
+                    <p style="color: #888;">Loading user data...</p>
+                </div>
+            </div>
+
+            <!-- Role Distribution -->
+            <div id="user-roles-section" class="user-section" style="margin-top: 15px;">
+                <h3 class="section-title" style="color: #a29bfe;"><span class="icon">🏷️</span> Role Distribution</h3>
+                <div id="role-bars"></div>
+            </div>
+
+            <!-- Station Users (shown when station selected) -->
+            <div id="station-users-section" class="user-section" style="margin-top: 15px; display: none;">
+                <h3 class="section-title" style="color: #a29bfe;">
+                    <span class="icon">📡</span> Station Users
+                    <span id="station-users-badge" style="font-size: 11px; background: rgba(162,155,254,0.2); padding: 2px 8px; border-radius: 10px; margin-left: 8px;"></span>
+                </h3>
+                <div id="station-users-list"></div>
+            </div>
+
+            <!-- User Detail (shown when user clicked) -->
+            <div id="user-detail-section" class="user-section" style="margin-top: 15px; display: none;">
+                <h3 class="section-title" style="color: #a29bfe;"><span class="icon">🔍</span> User Profile</h3>
+                <div id="user-detail-content"></div>
+                <div style="margin-top: 10px;">
+                    <button id="show-trajectory-btn" class="cyber-btn" style="width: 100%; border-color: #a29bfe; color: #a29bfe; padding: 8px; font-size: 12px; justify-content: center;">
+                        <span class="icon">🗺️</span> Show Trajectory on Map
+                    </button>
+                </div>
+            </div>
+
+            <!-- APP Traffic Models -->
+            <div id="app-models-section" class="user-section" style="margin-top: 15px;">
+                <h3 class="section-title" style="color: #a29bfe;"><span class="icon">📱</span> APP Traffic Models</h3>
+                <div id="app-models-content"></div>
+            </div>
+        </div>
+    </div>
+
     <button id="toggle-left-btn" class="panel-toggle-btn left-toggle">◀</button>
     <button id="toggle-right-btn" class="panel-toggle-btn right-toggle">▶</button>
     <div class="main-content">
@@ -153,6 +201,10 @@
 
             <button id="control-toggle" class="cyber-btn" style="border-color: #2ecc71; color: #2ecc71;">
                 <span class="icon">🔋</span> Energy Control
+            </button>
+
+            <button id="user-toggle" class="cyber-btn" style="border-color: #a29bfe; color: #a29bfe;">
+                <span class="icon">👤</span> Users
             </button>
 
             <div class="filter-wrapper">

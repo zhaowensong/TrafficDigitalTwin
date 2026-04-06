@@ -732,3 +732,168 @@ body {
     padding: 20px;
     border-top: 1px solid rgba(0, 206, 201, 0.3);
 }
+
+/* =========================================
+   User Panel Styles
+   ========================================= */
+.user-panel-theme::-webkit-scrollbar-thumb {
+    background: #a29bfe;
+}
+.user-panel-theme::-webkit-scrollbar-thumb:hover {
+    background: #6c5ce7;
+}
+.user-panel-theme .header {
+    border-bottom-color: rgba(162, 155, 254, 0.3);
+}
+
+#user-toggle.predict-on {
+    background: rgba(162, 155, 254, 0.2);
+    box-shadow: 0 0 20px rgba(162, 155, 254, 0.4);
+    border-color: #a29bfe;
+    color: #a29bfe;
+}
+
+.user-section {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+    padding: 12px;
+}
+
+.section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.stat-card {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    text-align: center;
+}
+
+.stat-card .stat-number {
+    font-size: 20px;
+    font-weight: bold;
+    color: #a29bfe;
+    font-family: 'Courier New', monospace;
+}
+
+.stat-card .stat-label {
+    font-size: 10px;
+    color: #888;
+    text-transform: uppercase;
+    margin-top: 4px;
+}
+
+.role-bar-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+    font-size: 12px;
+}
+
+.role-bar-item .role-name {
+    width: 110px;
+    color: #ccc;
+    font-size: 11px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.role-bar-item .bar-wrapper {
+    flex: 1;
+    height: 16px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+    overflow: hidden;
+    position: relative;
+}
+
+.role-bar-item .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.6s ease;
+}
+
+.role-bar-item .bar-count {
+    width: 40px;
+    color: #aaa;
+    font-size: 11px;
+    font-family: 'Courier New', monospace;
+}
+
+.user-list-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    margin-bottom: 4px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.03);
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 12px;
+}
+
+.user-list-item:hover {
+    background: rgba(162, 155, 254, 0.1);
+    border-color: rgba(162, 155, 254, 0.3);
+}
+
+.user-list-item .user-id {
+    color: #a29bfe;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+}
+
+.user-list-item .role-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(162, 155, 254, 0.15);
+    color: #ccc;
+}
+
+.app-model-card {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 8px;
+}
+
+.app-model-card .model-name {
+    font-size: 13px;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+.app-model-card .model-desc {
+    font-size: 11px;
+    color: #888;
+    line-height: 1.4;
+}
+
+.app-model-card .model-stats {
+    display: flex;
+    gap: 12px;
+    margin-top: 6px;
+    font-size: 10px;
+    color: #aaa;
+}

@@ -3,8 +3,8 @@
 // ==========================================
 // 从本地存储读取服务器配置，或使用默认值
 const SERVER_CONFIG = JSON.parse(localStorage.getItem('serverConfig')) || {
-    host: '127.0.0.1',
-    port: '5000',
+    host: '147.8.181.249',
+    port: '7860',
     protocol: 'http'
 };
 
@@ -40,6 +40,10 @@ let optimalMarker = null;
 let energyMainChartInstance = null;
 let energyDeltaChartInstance = null;
 let isControlMode = false;
+let isUserMode = false;
+let userTrajectoryLayer = null;
+let userTrajectoryMarkers = [];
+let currentUserStats = null;
 
 // ==========================================
 // 3. API Logic
@@ -71,6 +75,57 @@ async function fetchPrediction(id) {
     } catch (e) {
         console.error("Prediction API Error:", e);
         alert("Prediction failed: " + e.message);
+        return null;
+    }
+}
+
+// --- User Data API Functions ---
+async function fetchUserStats() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/users/stats`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch user stats error:', e);
+        return null;
+    }
+}
+
+async function fetchUsersByBase(baseId) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/users/by_base/${baseId}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch users by base error:', e);
+        return { users: [] };
+    }
+}
+
+async function fetchUserDetail(userId) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/users/${userId}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch user detail error:', e);
+        return null;
+    }
+}
+
+async function fetchUserTrajectory(userId, limit = 200) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/users/${userId}/trajectory?limit=${limit}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch user trajectory error:', e);
+        return { records: [] };
+    }
+}
+
+async function fetchAppModels() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/app_models`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch app models error:', e);
         return null;
     }
 }
@@ -616,6 +671,11 @@ function setupInteraction(map) {
         
         document.getElementById('selected-id').innerText = id;
 
+        // If user mode is on, load associated users
+        if (isUserMode) {
+            showStationUsers(id, map);
+        }
+
         try {
             document.getElementById('station-details').innerHTML = '<p class="placeholder-text">Loading details...</p>';
             
@@ -1101,6 +1161,8 @@ function setupPanelToggles(map) {
             let activePanel = null;
             if (predPanel && predPanel.classList.contains('active')) activePanel = predPanel;
             if (ctrlPanel && ctrlPanel.classList.contains('active')) activePanel = ctrlPanel;
+            const userPanel = document.getElementById('user-panel');
+            if (userPanel && userPanel.classList.contains('active')) activePanel = userPanel;
 
             if (activePanel) {
                 activePanel.classList.toggle('collapsed');
@@ -1142,6 +1204,7 @@ window.onload = async () => {
             // Bind Interactions
             setupPredictionMode(map);   // Initialize AI Prediction events
             setupControlMode(map);
+            setupUserMode(map);         // Initialize User Analytics
             setupInteraction(map);      // Initialize standard map clicks/popups
             setupModeToggle(map);       // 2D/3D View switch
             setupDataToggle(map);       // Layer visibility switch
@@ -1163,6 +1226,250 @@ window.onload = async () => {
         }
     });
 };
+
+// ==========================================
+// User Panel Logic
+// ==========================================
+const ROLE_COLORS = {
+    service_worker: '#e84393',
+    office_worker: '#0984e3',
+    student: '#00cec9',
+    factory_worker: '#fdcb6e',
+    freelancer: '#6c5ce7',
+    healthcare_worker: '#00b894'
+};
+
+const ROLE_LABELS = {
+    service_worker: 'Service Worker',
+    office_worker: 'Office Worker',
+    student: 'Student',
+    factory_worker: 'Factory Worker',
+    freelancer: 'Freelancer',
+    healthcare_worker: 'Healthcare'
+};
+
+function setupUserMode(map) {
+    const userBtn = document.getElementById('user-toggle');
+    const userPanel = document.getElementById('user-panel');
+    const closeUserBtn = document.getElementById('close-user-btn');
+    if (!userBtn) return;
+
+    userBtn.addEventListener('click', async () => {
+        if (!isUserMode && isPredictionMode) document.getElementById('predict-toggle').click();
+        if (!isUserMode && isControlMode) document.getElementById('control-toggle').click();
+
+        isUserMode = !isUserMode;
+        if (isUserMode) {
+            userBtn.classList.add('predict-on');
+            userBtn.innerHTML = '<span class="icon">👤</span> Users: ON';
+            userPanel.classList.add('active');
+            const rightBtn = document.getElementById('toggle-right-btn');
+            if (rightBtn) rightBtn.classList.add('active');
+            await loadUserOverview();
+            await loadAppModels();
+        } else {
+            userBtn.classList.remove('predict-on');
+            userBtn.innerHTML = '<span class="icon">👤</span> Users';
+            userPanel.classList.remove('active');
+            userPanel.classList.remove('collapsed');
+            const rightBtn = document.getElementById('toggle-right-btn');
+            if (rightBtn) {
+                rightBtn.innerText = '▶';
+                rightBtn.classList.remove('active');
+                rightBtn.classList.remove('collapsed');
+            }
+            clearUserTrajectory(map);
+        }
+    });
+
+    if (closeUserBtn) closeUserBtn.addEventListener('click', () => userBtn.click());
+}
+
+async function loadUserOverview() {
+    const statsDiv = document.getElementById('user-stats-content');
+    const roleBars = document.getElementById('role-bars');
+    const data = await fetchUserStats();
+    if (!data || !data.loaded) {
+        statsDiv.innerHTML = '<p style="color: #ff6b6b;">User data not available</p>';
+        return;
+    }
+    currentUserStats = data;
+
+    statsDiv.innerHTML = `
+        <div class="stat-card">
+            <div class="stat-number">${(data.total_users).toLocaleString()}</div>
+            <div class="stat-label">Total Users</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">${(data.total_trajectories / 1e6).toFixed(1)}M</div>
+            <div class="stat-label">Trajectories</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">${Object.keys(data.roles).length}</div>
+            <div class="stat-label">Role Types</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">${data.users_with_trajectories.toLocaleString()}</div>
+            <div class="stat-label">With Trajectory</div>
+        </div>`;
+
+    // Role distribution bars
+    const maxCount = Math.max(...Object.values(data.roles));
+    roleBars.innerHTML = Object.entries(data.roles)
+        .sort((a, b) => b[1] - a[1])
+        .map(([role, count]) => {
+            const pct = (count / maxCount * 100).toFixed(0);
+            const color = ROLE_COLORS[role] || '#888';
+            const label = ROLE_LABELS[role] || role;
+            return `<div class="role-bar-item">
+                <span class="role-name">${label}</span>
+                <div class="bar-wrapper"><div class="bar-fill" style="width:${pct}%; background:${color};"></div></div>
+                <span class="bar-count">${count}</span>
+            </div>`;
+        }).join('');
+}
+
+async function loadAppModels() {
+    const container = document.getElementById('app-models-content');
+    const data = await fetchAppModels();
+    if (!data) { container.innerHTML = '<p style="color:#888">Not available</p>'; return; }
+
+    const modelColors = { video: '#e84393', social: '#0984e3', gaming: '#fdcb6e', browsing: '#00cec9' };
+    container.innerHTML = Object.entries(data).map(([key, m]) => {
+        const color = modelColors[key] || '#888';
+        return `<div class="app-model-card" style="border-left: 3px solid ${color};">
+            <div class="model-name" style="color:${color}">${m.name_en}</div>
+            <div class="model-desc">${m.description}</div>
+            <div class="model-stats">
+                <span>↑ ${m.avg_bandwidth_mbps} Mbps</span>
+                <span>↓ DL ${(m.downlink_ratio * 100).toFixed(0)}%</span>
+                <span>⏱ ${m.latency_sensitivity}</span>
+            </div>
+            <div style="margin-top:4px; font-size:10px; color:#666;">${m.categories.join(', ')}</div>
+        </div>`;
+    }).join('');
+}
+
+async function showStationUsers(baseId, map) {
+    const section = document.getElementById('station-users-section');
+    const list = document.getElementById('station-users-list');
+    const badge = document.getElementById('station-users-badge');
+    if (!isUserMode) return;
+
+    section.style.display = 'block';
+    list.innerHTML = '<p style="color:#888; font-size:12px;">Loading...</p>';
+    badge.textContent = `Station #${baseId}`;
+
+    const data = await fetchUsersByBase(baseId);
+    if (!data.users || data.users.length === 0) {
+        list.innerHTML = '<p style="color:#888; font-size:12px;">No users at this station</p>';
+        return;
+    }
+
+    list.innerHTML = data.users.slice(0, 30).map(u => {
+        const color = ROLE_COLORS[u.role] || '#888';
+        const label = ROLE_LABELS[u.role] || u.role;
+        return `<div class="user-list-item" data-uid="${u.user_id}">
+            <span class="user-id">${u.user_id.substring(0, 12)}...</span>
+            <span class="role-badge" style="border: 1px solid ${color}; color: ${color};">${label}</span>
+        </div>`;
+    }).join('') + (data.users.length > 30 ? `<p style="color:#666; font-size:11px; text-align:center; margin-top:8px;">...and ${data.users.length - 30} more</p>` : '');
+
+    // Click user in list
+    list.querySelectorAll('.user-list-item').forEach(item => {
+        item.addEventListener('click', () => showUserDetail(item.dataset.uid, map));
+    });
+}
+
+async function showUserDetail(userId, map) {
+    const section = document.getElementById('user-detail-section');
+    const content = document.getElementById('user-detail-content');
+    section.style.display = 'block';
+    content.innerHTML = '<p style="color:#888;">Loading user profile...</p>';
+
+    const data = await fetchUserDetail(userId);
+    if (!data) { content.innerHTML = '<p style="color:#ff6b6b;">Error loading user</p>'; return; }
+
+    const color = ROLE_COLORS[data.role] || '#888';
+    const label = ROLE_LABELS[data.role] || data.role;
+    content.innerHTML = `
+        <div style="background:rgba(0,0,0,0.3); padding:10px; border-radius:6px; margin-bottom:8px;">
+            <p style="font-size:12px; color:#ccc;"><strong style="color:#a29bfe;">ID:</strong> <span style="font-family:monospace;">${data.user_id}</span></p>
+            <p style="font-size:12px; color:#ccc;"><strong style="color:#a29bfe;">Role:</strong> <span style="color:${color}">${label}</span></p>
+            <p style="font-size:12px; color:#ccc;"><strong style="color:#a29bfe;">Trajectory:</strong> ${(data.trajectory_count || 0).toLocaleString()} records</p>
+        </div>
+        ${data.app_summary ? `<div style="margin-top:6px;">
+            <p style="font-size:11px; color:#888; margin-bottom:4px;">APP USAGE:</p>
+            ${Object.entries(data.app_summary).map(([cat, cnt]) => 
+                `<span style="display:inline-block; font-size:10px; background:rgba(162,155,254,0.1); border:1px solid rgba(162,155,254,0.2); padding:2px 6px; border-radius:4px; margin:2px; color:#ccc;">${cat}: ${cnt}</span>`
+            ).join('')}
+        </div>` : ''}`;
+
+    // Setup trajectory button
+    const trajBtn = document.getElementById('show-trajectory-btn');
+    trajBtn.onclick = async () => {
+        trajBtn.innerHTML = '<span class="icon">⏳</span> Loading...';
+        await renderUserTrajectory(userId, map);
+        trajBtn.innerHTML = '<span class="icon">🗺️</span> Show Trajectory on Map';
+    };
+}
+
+async function renderUserTrajectory(userId, map) {
+    clearUserTrajectory(map);
+    const data = await fetchUserTrajectory(userId, 500);
+    if (!data.records || data.records.length === 0) return;
+
+    // records: [[timestamp, base_id, lng, lat, app_cat, ...], ...]
+    const coords = data.records
+        .filter(r => r[2] && r[3])
+        .map(r => [r[2], r[3]]);
+    
+    if (coords.length === 0) return;
+
+    // Add trajectory line
+    map.addSource('user-trajectory', {
+        type: 'geojson',
+        data: {
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: coords }
+        }
+    });
+
+    map.addLayer({
+        id: 'user-trajectory-line',
+        type: 'line',
+        source: 'user-trajectory',
+        paint: {
+            'line-color': '#a29bfe',
+            'line-width': 2.5,
+            'line-opacity': 0.8,
+            'line-dasharray': [2, 1]
+        }
+    });
+
+    // Add start/end markers
+    const startEl = document.createElement('div');
+    startEl.style.cssText = 'width:12px;height:12px;background:#00b894;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px #00b894;';
+    const endEl = document.createElement('div');
+    endEl.style.cssText = 'width:12px;height:12px;background:#e84393;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px #e84393;';
+
+    const startMarker = new mapboxgl.Marker(startEl).setLngLat(coords[0]).addTo(map);
+    const endMarker = new mapboxgl.Marker(endEl).setLngLat(coords[coords.length - 1]).addTo(map);
+    userTrajectoryMarkers.push(startMarker, endMarker);
+    userTrajectoryLayer = 'user-trajectory';
+
+    // Fit bounds to trajectory
+    const bounds = coords.reduce((b, c) => b.extend(c), new mapboxgl.LngLatBounds(coords[0], coords[0]));
+    map.fitBounds(bounds, { padding: 80, maxZoom: 15 });
+}
+
+function clearUserTrajectory(map) {
+    if (map.getLayer('user-trajectory-line')) map.removeLayer('user-trajectory-line');
+    if (map.getSource('user-trajectory')) map.removeSource('user-trajectory');
+    userTrajectoryMarkers.forEach(m => m.remove());
+    userTrajectoryMarkers = [];
+    userTrajectoryLayer = null;
+}
 
 // ==========================================
 // Server Settings Functions
