@@ -45,6 +45,11 @@ class DataManager:
         self.user_roles = defaultdict(list)  # role -> [user_id, ...]
         self.base_to_users = defaultdict(set)  # base_id(numeric) -> {user_id, ...}
 
+        # 模拟快照相关
+        self.base_id_to_loc = {}         # serving_base_id(numeric) -> [lng, lat]
+        self.base_id_to_station_id = {}  # serving_base_id(numeric) -> station hex id
+        self.trajectory_time_slots = 0   # 轨迹时间片总数 (336)
+
         # 状态
         self._loaded_stations = False
         self._loaded_users = False
@@ -211,6 +216,9 @@ class DataManager:
             elapsed = time.time() - t0
             print(f"[DataManager] Trajectories loaded: {len(self.user_trajectories)} users, "
                   f"{sum(len(r) for r in self.user_trajectories.values())} records in {elapsed:.1f}s")
+
+            # 构建 serving_base_id -> loc 映射
+            self._build_base_id_loc_mapping()
         else:
             print(f"[DataManager] Warning: {trajectories_path} not found, trajectories not loaded.")
 
@@ -402,6 +410,196 @@ class DataManager:
             "total_trajectories": total_traj,
             "roles": role_counts,
             "users_with_trajectories": len(self.user_trajectories),
+        }
+
+    # ==========================================
+    # 模拟快照接口
+    # ==========================================
+
+    def _build_base_id_loc_mapping(self):
+        """从轨迹数据中构建 serving_base_id(numeric) -> 基站坐标 映射，
+        并按物理坐标对 cell 分组（同一坐标的不同 cell ID 属于同一物理基站）。"""
+        t0 = time.time()
+        seen_ids = set()
+
+        # 第一步：收集所有轨迹中引用的基站信息
+        for uid, records in self.user_trajectories.items():
+            if self.trajectory_time_slots == 0 and records:
+                self.trajectory_time_slots = len(records)
+            for rec in records:
+                if len(rec) < 5:
+                    continue
+                base_id_num = rec[3]  # serving_base_id (numeric)
+                if base_id_num in seen_ids:
+                    continue
+                seen_ids.add(base_id_num)
+                base_key = rec[4]     # serving_base_key e.g. "Base_3610000F1752"
+                if self.base_json and base_key in self.base_json:
+                    self.base_id_to_loc[base_id_num] = self.base_json[base_key]['loc']
+                    # 提取 hex station id (去掉 "Base_" 前缀)
+                    self.base_id_to_station_id[base_id_num] = base_key[5:] if base_key.startswith('Base_') else base_key
+
+        # 第二步：构建地图基站索引，并将每个轨迹 cell 分配到最近的地图基站（200m内）
+        # 这是真实的：同一物理基站塔的不同扇区坐标略有偏差，但都在​200m范围内
+        map_hex_ids = set(s['id'] for s in self.station_list)
+        map_stations = [(s['id'], s['loc'][0], s['loc'][1]) for s in self.station_list]
+
+        # 距离阈值: 200m ≈ 0.002° (lat), (0.002)^2 = 4e-6
+        PROXIMITY_THRESHOLD_SQ = 4e-6
+
+        self.numeric_to_map_hex = {}  # numeric_id -> nearest map hex (within 200m)
+        self.map_hex_to_numeric_ids = defaultdict(set)  # map hex -> set of numeric_ids
+
+        for num_id, loc in self.base_id_to_loc.items():
+            hex_id = self.base_id_to_station_id.get(num_id)
+            # 如果本身就是地图基站，直接映射
+            if hex_id and hex_id in map_hex_ids:
+                self.numeric_to_map_hex[num_id] = hex_id
+                self.map_hex_to_numeric_ids[hex_id].add(num_id)
+                continue
+
+            # 否则找最近的地图基站
+            best_hex = None
+            best_dist = float('inf')
+            for ms_hex, ms_lng, ms_lat in map_stations:
+                d = (loc[0] - ms_lng) ** 2 + (loc[1] - ms_lat) ** 2
+                if d < best_dist:
+                    best_dist = d
+                    best_hex = ms_hex
+
+            if best_dist <= PROXIMITY_THRESHOLD_SQ:
+                self.numeric_to_map_hex[num_id] = best_hex
+                self.map_hex_to_numeric_ids[best_hex].add(num_id)
+
+        # 统计
+        mapped_count = len(self.numeric_to_map_hex)
+        multi = sum(1 for ids in self.map_hex_to_numeric_ids.values() if len(ids) > 1)
+        avg_cells = mapped_count / max(len(self.map_hex_to_numeric_ids), 1)
+        elapsed = time.time() - t0
+        print(f"[DataManager] Cell mapping: {len(self.base_id_to_loc)} cells -> {mapped_count} mapped to {len(self.map_hex_to_numeric_ids)} map stations (200m threshold)")
+        print(f"[DataManager] {multi} stations have multi-cells (avg {avg_cells:.1f} cells/station), {len(self.base_id_to_loc) - mapped_count} cells unmapped (>200m)")
+        print(f"[DataManager] Built in {elapsed:.1f}s, trajectory time slots: {self.trajectory_time_slots}")
+
+    def get_simulation_snapshot(self, time_index, bbox=None):
+        """
+        获取指定时间片的模拟快照：所有用户的位置 + 连接信息。
+
+        Args:
+            time_index: 时间片索引 (0 ~ trajectory_time_slots-1)
+            bbox: 可选视口过滤 [min_lng, min_lat, max_lng, max_lat]
+
+        Returns:
+            dict: {
+                time_index, total_users,
+                schema: [...],
+                users: [[lng, lat, base_id, signal_dbm, traffic_mb], ...],
+                station_locs: {base_id: [lng, lat], ...},  (首次请求时)
+                station_stats: {base_id: {users, traffic, avg_signal}, ...}
+            }
+        """
+        if not self._loaded_users or not self.user_trajectories:
+            return {"error": "User data not loaded"}
+
+        if time_index < 0 or time_index >= self.trajectory_time_slots:
+            return {"error": f"time_index must be 0-{self.trajectory_time_slots - 1}"}
+
+        users_data = []
+        # 按地图基站 (map hex) 聚合统计，同一基站 200m 内多 cell 汇总
+        site_agg = defaultdict(lambda: {"users": 0, "traffic": 0.0, "signal_sum": 0.0, "cells": set()})
+
+        for uid, records in self.user_trajectories.items():
+            if time_index >= len(records):
+                continue
+            rec = records[time_index]
+            if len(rec) < 12:
+                continue
+
+            lng = rec[1]
+            lat = rec[2]
+            base_id = rec[3]       # serving_base_id (numeric)
+            traffic = rec[10] if rec[10] is not None else 0
+            signal = rec[11] if rec[11] is not None else -100
+
+            # 视口过滤
+            if bbox:
+                if lng < bbox[0] or lng > bbox[2] or lat < bbox[1] or lat > bbox[3]:
+                    continue
+
+            users_data.append([round(lng, 6), round(lat, 6), base_id, round(signal, 1), round(traffic, 2)])
+
+            # 按地图基站聚合（200m范围内的同站多 cell 真实汇总）
+            map_hex = self.numeric_to_map_hex.get(base_id)
+            if map_hex:
+                st = site_agg[map_hex]
+                st["users"] += 1
+                st["traffic"] += traffic
+                st["signal_sum"] += signal
+                st["cells"].add(base_id)
+
+        # 构建 station_stats，用 map hex ID 作为 key
+        station_stats = {}
+        for hex_id, st in site_agg.items():
+            station_stats[hex_id] = {
+                "users": st["users"],
+                "traffic": round(st["traffic"], 2),
+                "avg_signal": round(st["signal_sum"] / st["users"], 1) if st["users"] > 0 else -100,
+                "cells": len(st["cells"]),
+            }
+
+        return {
+            "time_index": time_index,
+            "total_users": len(users_data),
+            "time_slots": self.trajectory_time_slots,
+            "schema": ["lng", "lat", "base_id", "signal_dbm", "traffic_mb"],
+            "users": users_data,
+            "station_stats": station_stats,
+        }
+
+    def get_station_locs_by_numeric_id(self):
+        """返回 serving_base_id(numeric) -> [lng, lat] 的映射，供前端缓存"""
+        return {str(k): v for k, v in self.base_id_to_loc.items()}
+
+    def get_station_id_mapping(self):
+        """返回 hex station_id -> serving_base_id(numeric) 的双向映射"""
+        hex_to_num = {v: k for k, v in self.base_id_to_station_id.items()}
+        return {"hex_to_numeric": {str(k): v for k, v in hex_to_num.items()},
+                "numeric_to_hex": {str(k): v for k, v in self.base_id_to_station_id.items()}}
+
+    def get_station_time_series(self, station_hex_id):
+        """
+        统计某地图基站及其 200m 内所有 cell 在每个时间片的接入用户数和总流量。
+
+        Args:
+            station_hex_id: 地图基站 hex ID
+
+        Returns:
+            dict: {station_id, cells, time_slots, user_counts: [...], traffic_totals: [...]}
+        """
+        if not self._loaded_users:
+            return {"error": "User data not loaded"}
+
+        user_counts = [0] * self.trajectory_time_slots
+        traffic_totals = [0.0] * self.trajectory_time_slots
+
+        # 找到该地图基站对应的所有 cell IDs（200m 范围内）
+        target_ids = self.map_hex_to_numeric_ids.get(str(station_hex_id), set())
+        if not target_ids:
+            return {"error": f"Station {station_hex_id} has no associated cells"}
+
+        for uid, records in self.user_trajectories.items():
+            for t, rec in enumerate(records):
+                if t >= self.trajectory_time_slots:
+                    break
+                if len(rec) >= 4 and rec[3] in target_ids:
+                    user_counts[t] += 1
+                    traffic_totals[t] += rec[10] if len(rec) > 10 and rec[10] is not None else 0
+
+        return {
+            "station_id": str(station_hex_id),
+            "cells": len(target_ids),
+            "time_slots": self.trajectory_time_slots,
+            "user_counts": user_counts,
+            "traffic_totals": [round(t, 2) for t in traffic_totals],
         }
 
     # ==========================================

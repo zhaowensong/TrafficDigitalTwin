@@ -24,10 +24,12 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
 
     // 开发工具（开发时启用）
-    // mainWindow.webContents.openDevTools();
+    mainWindow.webContents.openDevTools();
 
     // 窗口加载完成后显示
     mainWindow.once('ready-to-show', () => {
+        // 清除旧的服务器配置缓存，使用代码中的默认值
+        mainWindow.webContents.executeJavaScript("localStorage.removeItem('serverConfig')");
         mainWindow.show();
     });
 

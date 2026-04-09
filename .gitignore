@@ -8,3 +8,4 @@ __pycache__/
 electron-client/node_modules/
 electron-client/portable/
 electron-client/dist/
+electron-client/src/mapbox_token.js

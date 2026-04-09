@@ -154,8 +154,12 @@ __pycache__/
 - 前端页面正常加载
 - API 响应正常（~200KB）
 - 代码已推送到 GitHub
+- Phase 1: 基站扩展 + 用户数据接入 + APP模型 + DataManager
+- Phase 2: 模拟模式 + 连接可视化 + 密度热力图 + 基站用户数着色
+- C/S 架构部署验证通过（SSH 隧道 + Electron）
 
 ⚠️ **待处理**:
+- Phase 2 剩余: Handover动画、流量流向图、性能优化
 - 需要手动上传模型文件 `best_corr_model.pt`
 - 需要手动上传数据文件 `*.npz`
 - 需要配置 Mapbox Token

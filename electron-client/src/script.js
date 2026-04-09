@@ -3,13 +3,13 @@
 // ==========================================
 // 从本地存储读取服务器配置，或使用默认值
 const SERVER_CONFIG = JSON.parse(localStorage.getItem('serverConfig')) || {
-    host: '147.8.181.249',
+    host: '127.0.0.1',
     port: '7860',
     protocol: 'http'
 };
 
 const CONFIG = {
-    MAPBOX_TOKEN: 'YOUR_MAPBOX_TOKEN_HERE',
+    MAPBOX_TOKEN: window.MAPBOX_TOKEN || 'YOUR_MAPBOX_TOKEN_HERE',
     get API_BASE() {
         return `${SERVER_CONFIG.protocol}://${SERVER_CONFIG.host}:${SERVER_CONFIG.port}/api`;
     },
@@ -41,6 +41,17 @@ let energyMainChartInstance = null;
 let energyDeltaChartInstance = null;
 let isControlMode = false;
 let isUserMode = false;
+let isSimMode = false;
+let simStationLocs = null;     // {numeric_base_id: [lng, lat]}
+let simSnapshotCache = {};     // {time_index: snapshotData}
+let simCurrentTime = 0;
+let simTimeSlots = 336;
+let simAnimFrameId = null;
+let simIsPlaying = false;
+let simLayerVisibility = { dots: true, lines: false, heatmap: false };
+let simStationIdMap = null;    // {hex_to_numeric: {}, numeric_to_hex: {}}
+let simSelectedStationHexId = null;  // currently selected station hex id in sim mode
+let simSelectedStationCoords = null; // [lng, lat] of selected station
 let userTrajectoryLayer = null;
 let userTrajectoryMarkers = [];
 let currentUserStats = null;
@@ -126,6 +137,57 @@ async function fetchAppModels() {
         return await res.json();
     } catch (e) {
         console.error('Fetch app models error:', e);
+        return null;
+    }
+}
+
+// --- Simulation API Functions ---
+async function fetchSimulationSnapshot(timeIndex) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/snapshot?t=${timeIndex}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch simulation snapshot error:', e);
+        return null;
+    }
+}
+
+async function fetchSimulationStationLocs() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/station_locs`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch simulation station locs error:', e);
+        return null;
+    }
+}
+
+async function fetchSimulationInfo() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/info`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch simulation info error:', e);
+        return null;
+    }
+}
+
+async function fetchSimStationIdMap() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/station_id_map`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch station id map error:', e);
+        return null;
+    }
+}
+
+async function fetchStationTimeSeries(stationId) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/station_time_series/${stationId}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch station time series error:', e);
         return null;
     }
 }
@@ -520,6 +582,28 @@ function setupInteraction(map) {
     map.on('click', 'stations-hitbox', async (e) => {
         const coordinates = e.features[0].geometry.coordinates.slice();
         const id = e.features[0].properties.id;
+
+        // In simulation mode, show station sim stats
+        if (isSimMode) {
+            if (currentMarker) currentMarker.remove();
+            currentMarker = new mapboxgl.Marker({ color: '#ff6348' }).setLngLat(coordinates).addTo(map);
+            map.flyTo({ center: coordinates, zoom: 15, pitch: 0, speed: 1.5 });
+            document.getElementById('selected-id').innerText = id;
+
+            // Remember selected station for auto-refresh on timeline change
+            simSelectedStationHexId = id;
+            simSelectedStationCoords = coordinates;
+
+            // Update station panel with current snapshot
+            updateSimStationPanel();
+
+            // Fetch and render time series chart (one-time load, uses hex ID now)
+            const ts = await fetchStationTimeSeries(id);
+            if (ts && ts.user_counts) {
+                renderChart(ts.user_counts);
+            }
+            return;
+        }
 
 
         if (isPredictionMode || isControlMode) {
@@ -925,8 +1009,8 @@ function setupModeToggle(map) {
     if (!btn) return;
 
     btn.onclick = () => {
-        if (isPredictionMode || isControlMode) {
-            alert("Please exit AI Mode (Prediction / Energy Control) before switching to 3D.");
+        if (isPredictionMode || isControlMode || isSimMode) {
+            alert("Please exit AI Mode (Prediction / Energy Control / Simulation) before switching to 3D.");
             return;
         }
 
@@ -1205,6 +1289,7 @@ window.onload = async () => {
             setupPredictionMode(map);   // Initialize AI Prediction events
             setupControlMode(map);
             setupUserMode(map);         // Initialize User Analytics
+            setupSimulationMode(map);   // Initialize Simulation Mode
             setupInteraction(map);      // Initialize standard map clicks/popups
             setupModeToggle(map);       // 2D/3D View switch
             setupDataToggle(map);       // Layer visibility switch
@@ -1469,6 +1554,502 @@ function clearUserTrajectory(map) {
     userTrajectoryMarkers.forEach(m => m.remove());
     userTrajectoryMarkers = [];
     userTrajectoryLayer = null;
+}
+
+// ==========================================
+// Simulation Mode (Phase 2)
+// ==========================================
+
+function setupSimulationMode(map) {
+    const simBtn = document.getElementById('sim-toggle');
+    const simControls = document.getElementById('sim-controls');
+    const simLegend = document.getElementById('sim-legend');
+    if (!simBtn) return;
+
+    simBtn.addEventListener('click', async () => {
+        // Exit other modes first
+        if (!isSimMode && isPredictionMode) document.getElementById('predict-toggle').click();
+        if (!isSimMode && isControlMode) document.getElementById('control-toggle').click();
+        if (!isSimMode && isUserMode) document.getElementById('user-toggle').click();
+
+        isSimMode = !isSimMode;
+
+        if (isSimMode) {
+            simBtn.classList.add('predict-on');
+            simBtn.innerHTML = '<span class="icon">\ud83c\udf10</span> Sim: ON';
+
+            // Switch to 2D
+            const pitch = map.getPitch();
+            if (pitch > 10) {
+                const viewBtn = document.getElementById('view-toggle');
+                if (viewBtn) viewBtn.click();
+            }
+
+            simControls.style.display = 'block';
+            simLegend.style.display = 'block';
+
+            // Load station locs mapping (one-time)
+            if (!simStationLocs) {
+                const [locs, idMap] = await Promise.all([
+                    fetchSimulationStationLocs(),
+                    fetchSimStationIdMap()
+                ]);
+                simStationLocs = locs;
+                simStationIdMap = idMap;
+                console.log(`[Sim] Station locs loaded: ${Object.keys(simStationLocs || {}).length}`);
+            }
+
+            // Get simulation info
+            const info = await fetchSimulationInfo();
+            if (info && info.time_slots) {
+                simTimeSlots = info.time_slots;
+            }
+
+            // Update time slider for simulation (7 days, 30-min slots)
+            const slider = document.getElementById('time-slider');
+            if (slider) {
+                slider._originalMax = slider.max;  // Save original
+                slider.max = simTimeSlots - 1;
+                slider.value = 0;
+            }
+
+            // Initialize simulation layers
+            initSimulationLayers(map);
+
+            // Load first snapshot
+            await updateSimulationSnapshot(map, 0);
+
+            // Setup layer toggle buttons
+            setupSimLayerToggles(map);
+
+            // Override time slider for simulation (once)
+            if (!map._simTimelineSetup) {
+                setupSimTimeline(map);
+                map._simTimelineSetup = true;
+            }
+
+        } else {
+            simBtn.classList.remove('predict-on');
+            simBtn.innerHTML = '<span class="icon">\ud83c\udf10</span> Simulation';
+            simControls.style.display = 'none';
+            simLegend.style.display = 'none';
+
+            // Stop playback
+            if (simAnimFrameId) { clearTimeout(simAnimFrameId); simAnimFrameId = null; }
+            simIsPlaying = false;
+            const playBtn = document.getElementById('play-btn');
+            if (playBtn) playBtn.innerText = '\u25b6';
+
+            // Restore time slider
+            const slider = document.getElementById('time-slider');
+            if (slider && slider._originalMax) {
+                slider.max = slider._originalMax;
+                slider.value = 0;
+            }
+
+            // Remove simulation layers
+            cleanupSimulationLayers(map);
+            simSnapshotCache = {};
+            simSelectedStationHexId = null;
+            simSelectedStationCoords = null;
+        }
+    });
+}
+
+function initSimulationLayers(map) {
+    // --- Station overlay: color stations by user count ---
+    if (!map.getSource('sim-station-stats')) {
+        map.addSource('sim-station-stats', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+    if (!map.getLayer('sim-station-overlay')) {
+        map.addLayer({
+            id: 'sim-station-overlay',
+            type: 'circle',
+            source: 'sim-station-stats',
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['get', 'users'],
+                    0, 4,
+                    5, 6,
+                    15, 10,
+                    30, 14,
+                    60, 20
+                ],
+                'circle-color': [
+                    'interpolate', ['linear'], ['get', 'users'],
+                    0, '#2c3e50',
+                    3, '#0984e3',
+                    10, '#00cec9',
+                    25, '#fdcb6e',
+                    50, '#e17055',
+                    80, '#d63031'
+                ],
+                'circle-opacity': 0.85,
+                'circle-stroke-width': 1.5,
+                'circle-stroke-color': 'rgba(255,255,255,0.6)'
+            }
+        });
+    }
+
+    // Dim existing 3D pillars in sim mode
+    if (map.getLayer('stations-3d-pillars')) {
+        map.setPaintProperty('stations-3d-pillars', 'fill-extrusion-opacity', 0.15);
+    }
+    if (map.getLayer('stations-heatmap')) {
+        map.setLayoutProperty('stations-heatmap', 'visibility', 'none');
+    }
+
+    // Users points source + layer
+    if (!map.getSource('sim-users')) {
+        map.addSource('sim-users', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+
+    // User dots layer
+    if (!map.getLayer('sim-users-dots')) {
+        map.addLayer({
+            id: 'sim-users-dots',
+            type: 'circle',
+            source: 'sim-users',
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 1.5,
+                    13, 3,
+                    16, 5
+                ],
+                'circle-color': [
+                    'step', ['get', 'signal'],
+                    '#e74c3c',    // default: red (< -100)
+                    -100, '#f39c12', // yellow (-100 to -80)
+                    -80, '#2ecc71'   // green (> -80)
+                ],
+                'circle-opacity': 0.75,
+                'circle-stroke-width': 0.5,
+                'circle-stroke-color': 'rgba(255,255,255,0.3)'
+            }
+        });
+    }
+
+    // User density heatmap layer (hidden by default)
+    if (!map.getLayer('sim-users-heatmap')) {
+        map.addLayer({
+            id: 'sim-users-heatmap',
+            type: 'heatmap',
+            source: 'sim-users',
+            paint: {
+                'heatmap-weight': [
+                    'interpolate', ['linear'], ['get', 'traffic'],
+                    0, 0.1,
+                    5, 0.5,
+                    50, 1
+                ],
+                'heatmap-intensity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 1, 13, 3
+                ],
+                'heatmap-color': [
+                    'interpolate', ['linear'], ['heatmap-density'],
+                    0, 'rgba(0,0,0,0)',
+                    0.15, '#2c3e50',
+                    0.3, '#8e44ad',
+                    0.5, '#e74c3c',
+                    0.7, '#f39c12',
+                    1, '#ffffff'
+                ],
+                'heatmap-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 8, 13, 20, 16, 30
+                ],
+                'heatmap-opacity': 0.8
+            },
+            layout: { 'visibility': 'none' }
+        });
+    }
+
+    // Connection lines source + layer
+    if (!map.getSource('sim-lines')) {
+        map.addSource('sim-lines', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+
+    if (!map.getLayer('sim-lines-layer')) {
+        map.addLayer({
+            id: 'sim-lines-layer',
+            type: 'line',
+            source: 'sim-lines',
+            paint: {
+                'line-color': [
+                    'step', ['get', 'signal'],
+                    '#e74c3c',
+                    -100, '#f39c12',
+                    -80, '#2ecc71'
+                ],
+                'line-width': 0.8,
+                'line-opacity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 0.05,
+                    13, 0.25,
+                    16, 0.5
+                ]
+            },
+            layout: { 'visibility': 'none' },
+            minzoom: 11
+        });
+    }
+}
+
+function cleanupSimulationLayers(map) {
+    const layers = ['sim-users-dots', 'sim-users-heatmap', 'sim-lines-layer', 'sim-station-overlay'];
+    layers.forEach(id => {
+        if (map.getLayer(id)) map.removeLayer(id);
+    });
+    if (map.getSource('sim-users')) map.removeSource('sim-users');
+    if (map.getSource('sim-lines')) map.removeSource('sim-lines');
+    if (map.getSource('sim-station-stats')) map.removeSource('sim-station-stats');
+
+    // Restore original station layers
+    if (map.getLayer('stations-3d-pillars')) {
+        map.setPaintProperty('stations-3d-pillars', 'fill-extrusion-opacity', 0.7);
+    }
+    if (map.getLayer('stations-heatmap')) {
+        map.setLayoutProperty('stations-heatmap', 'visibility', 'visible');
+    }
+}
+
+let _simDebounceTimer = null;
+
+async function updateSimulationSnapshot(map, timeIndex) {
+    // Check cache first
+    let data = simSnapshotCache[timeIndex];
+    if (!data) {
+        data = await fetchSimulationSnapshot(timeIndex);
+        if (!data || data.error) {
+            console.error('[Sim] Snapshot error:', data?.error);
+            return;
+        }
+        // Cache (keep max 10 snapshots)
+        simSnapshotCache[timeIndex] = data;
+        const keys = Object.keys(simSnapshotCache);
+        if (keys.length > 10) {
+            delete simSnapshotCache[keys[0]];
+        }
+    }
+
+    simCurrentTime = timeIndex;
+
+    // Build user point features
+    const pointFeatures = [];
+    const lineFeatures = [];
+
+    for (const u of data.users) {
+        // u = [lng, lat, base_id, signal_dbm, traffic_mb]
+        const lng = u[0], lat = u[1], baseId = u[2], signal = u[3], traffic = u[4];
+
+        pointFeatures.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [lng, lat] },
+            properties: { signal, traffic, base_id: baseId }
+        });
+
+        // Build connection line if station loc is known
+        if (simStationLocs) {
+            const stationLoc = simStationLocs[String(baseId)];
+            if (stationLoc) {
+                lineFeatures.push({
+                    type: 'Feature',
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: [[lng, lat], stationLoc]
+                    },
+                    properties: { signal, base_id: baseId }
+                });
+            }
+        }
+    }
+
+    // Build station overlay features (color by user count)
+    const stationOverlayFeatures = [];
+    if (data.station_stats && globalStationData) {
+        const stationLocMap = {};
+        globalStationData.forEach(s => { stationLocMap[s.id] = s.loc; });
+        for (const [hexId, stats] of Object.entries(data.station_stats)) {
+            const loc = stationLocMap[hexId];
+            if (loc) {
+                stationOverlayFeatures.push({
+                    type: 'Feature',
+                    geometry: { type: 'Point', coordinates: [loc[0], loc[1]] },
+                    properties: {
+                        id: hexId,
+                        users: stats.users,
+                        traffic: stats.traffic,
+                        avg_signal: stats.avg_signal,
+                        cells: stats.cells || 1
+                    }
+                });
+            }
+        }
+    }
+
+    // Update sources
+    const usersGeo = { type: 'FeatureCollection', features: pointFeatures };
+    const linesGeo = { type: 'FeatureCollection', features: lineFeatures };
+    const stationStatsGeo = { type: 'FeatureCollection', features: stationOverlayFeatures };
+
+    if (map.getSource('sim-users')) map.getSource('sim-users').setData(usersGeo);
+    if (map.getSource('sim-lines')) map.getSource('sim-lines').setData(linesGeo);
+    if (map.getSource('sim-station-stats')) map.getSource('sim-station-stats').setData(stationStatsGeo);
+
+    // Update UI
+    const timeDisplay = document.getElementById('sim-time-display');
+    const userCount = document.getElementById('sim-user-count');
+    if (timeDisplay) {
+        const day = Math.floor(timeIndex / 48) + 1;
+        const slotInDay = timeIndex % 48;
+        const hour = Math.floor(slotInDay / 2);
+        const min = (slotInDay % 2) * 30;
+        timeDisplay.textContent = `Day ${day} ${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+    }
+    if (userCount) {
+        userCount.textContent = `${data.total_users.toLocaleString()} users`;
+    }
+
+    // Also update the main time display
+    const mainDisplay = document.getElementById('time-display');
+    if (mainDisplay && isSimMode) {
+        const day = Math.floor(timeIndex / 48) + 1;
+        const slotInDay = timeIndex % 48;
+        const hour = Math.floor(slotInDay / 2);
+        const min = (slotInDay % 2) * 30;
+        mainDisplay.innerText = `Day ${String(day).padStart(2, '0')} - ${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+    }
+
+    // Auto-refresh station panel if a station is selected
+    if (simSelectedStationHexId) {
+        updateSimStationPanel();
+    }
+}
+
+/**
+ * Update the left station panel with simulation stats for the currently selected station.
+ * Called on station click AND on timeline change.
+ */
+function updateSimStationPanel() {
+    if (!simSelectedStationHexId) return;
+    const coords = simSelectedStationCoords;
+    const id = simSelectedStationHexId;
+
+    // station_stats now uses hex ID directly (after backend merge)
+    const snapshot = simSnapshotCache[simCurrentTime];
+    let stStats = null;
+    if (snapshot && snapshot.station_stats) {
+        stStats = snapshot.station_stats[id];
+    }
+
+    // Time label
+    const day = Math.floor(simCurrentTime / 48) + 1;
+    const slotInDay = simCurrentTime % 48;
+    const hour = Math.floor(slotInDay / 2);
+    const min = (slotInDay % 2) * 30;
+    const timeLabel = `Day ${day} ${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+
+    let html = `<div style="margin-top:10px;">`;
+    html += `<p><strong>Longitude:</strong> ${coords[0].toFixed(4)}</p>`;
+    html += `<p><strong>Latitude:</strong> ${coords[1].toFixed(4)}</p>`;
+    html += `<hr style="border:0; border-top:1px solid #444; margin:5px 0;">`;
+    html += `<p style="font-size:11px; color:#888; margin-bottom:6px;">⏱ ${timeLabel}</p>`;
+    if (stStats) {
+        html += `<p><strong style="color:#ff6348;">Connected Users:</strong> <span style="color:#fff; font-size:16px; font-weight:bold;">${stStats.users}</span></p>`;
+        html += `<p><strong style="color:#ff6348;">Total Traffic:</strong> <span style="color:#fff;">${stStats.traffic.toFixed(1)} MB</span></p>`;
+        html += `<p><strong style="color:#ff6348;">Avg Signal:</strong> <span style="color:${stStats.avg_signal > -80 ? '#2ecc71' : stStats.avg_signal > -100 ? '#f39c12' : '#e74c3c'};">${stStats.avg_signal} dBm</span></p>`;
+        if (stStats.cells && stStats.cells > 1) {
+            html += `<p style="font-size:11px; color:#888; margin-top:4px;">📡 ${stStats.cells} cells at this site</p>`;
+        }
+    } else {
+        html += `<p style="color:#888;">No users connected at this time</p>`;
+    }
+    html += `</div>`;
+    document.getElementById('station-details').innerHTML = html;
+}
+
+function setupSimLayerToggles(map) {
+    const dotsBtn = document.getElementById('sim-show-dots');
+    const linesBtn = document.getElementById('sim-show-lines');
+    const heatmapBtn = document.getElementById('sim-show-heatmap');
+
+    function toggleLayer(btn, layerId, key) {
+        if (!btn) return;
+        btn.onclick = () => {
+            simLayerVisibility[key] = !simLayerVisibility[key];
+            btn.classList.toggle('active', simLayerVisibility[key]);
+            if (map.getLayer(layerId)) {
+                map.setLayoutProperty(layerId, 'visibility', simLayerVisibility[key] ? 'visible' : 'none');
+            }
+        };
+    }
+
+    toggleLayer(dotsBtn, 'sim-users-dots', 'dots');
+    toggleLayer(linesBtn, 'sim-lines-layer', 'lines');
+    toggleLayer(heatmapBtn, 'sim-users-heatmap', 'heatmap');
+}
+
+function setupSimTimeline(map) {
+    const slider = document.getElementById('time-slider');
+    const playBtn = document.getElementById('play-btn');
+    if (!slider || !playBtn) return;
+
+    // Override slider input for simulation
+    const simSliderHandler = (e) => {
+        if (!isSimMode) return;
+        e.stopPropagation();
+        simIsPlaying = false;
+        if (simAnimFrameId) { clearTimeout(simAnimFrameId); simAnimFrameId = null; }
+        playBtn.innerText = '\u25b6';
+
+        const val = parseInt(e.target.value);
+        // Debounce API calls when scrubbing
+        if (_simDebounceTimer) clearTimeout(_simDebounceTimer);
+        _simDebounceTimer = setTimeout(() => {
+            updateSimulationSnapshot(map, val);
+        }, 80);
+    };
+
+    slider.addEventListener('input', simSliderHandler);
+
+    // Override play button for simulation
+    const origPlayClick = playBtn.onclick;
+    playBtn.onclick = () => {
+        if (!isSimMode) {
+            if (origPlayClick) origPlayClick();
+            return;
+        }
+
+        simIsPlaying = !simIsPlaying;
+        playBtn.innerText = simIsPlaying ? '\u23f8' : '\u25b6';
+
+        if (simIsPlaying) {
+            const simPlay = async () => {
+                if (!simIsPlaying || !isSimMode) return;
+                let val = parseInt(slider.value);
+                val = (val + 1) % simTimeSlots;
+                slider.value = val;
+                await updateSimulationSnapshot(map, val);
+                if (simIsPlaying && isSimMode) {
+                    simAnimFrameId = setTimeout(simPlay, 300);
+                }
+            };
+            simPlay();
+        } else {
+            if (simAnimFrameId) { clearTimeout(simAnimFrameId); simAnimFrameId = null; }
+        }
+    };
 }
 
 // ==========================================

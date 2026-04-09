@@ -8,6 +8,7 @@
     <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
     <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="mapbox_token.js" onerror="console.warn('mapbox_token.js not found, using default')"></script>
     
     <link rel="stylesheet" href="style.css">
 </head>
@@ -207,6 +208,10 @@
                 <span class="icon">👤</span> Users
             </button>
 
+            <button id="sim-toggle" class="cyber-btn" style="border-color: #ff6348; color: #ff6348;">
+                <span class="icon">🌐</span> Simulation
+            </button>
+
             <div class="filter-wrapper">
                 <button id="filter-btn" class="cyber-btn">
                     <span class="icon">🌪️</span> Filter Volatility
@@ -227,6 +232,35 @@
         </div>
 
         <div id="map"></div>
+    </div>
+
+    <!-- Simulation Controls (shown in sim mode) -->
+    <div id="sim-controls" class="sim-controls-bar" style="display: none;">
+        <div class="sim-controls-inner">
+            <span class="sim-label">🌐 SIMULATION</span>
+            <div class="sim-layer-toggles">
+                <button id="sim-show-dots" class="sim-layer-btn active" title="User Dots">🔵 Users</button>
+                <button id="sim-show-lines" class="sim-layer-btn" title="Connection Lines">↔️ Lines</button>
+                <button id="sim-show-heatmap" class="sim-layer-btn" title="Density Heatmap">🌡️ Heatmap</button>
+            </div>
+            <div class="sim-time-info">
+                <span id="sim-time-display" class="sim-time-text">Day 1 00:00</span>
+                <span id="sim-user-count" class="sim-count-text">0 users</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Simulation Legend -->
+    <div id="sim-legend" class="sim-legend" style="display: none;">
+        <div class="legend-title">Signal Quality (Users)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#2ecc71;"></span> &gt; -80 dBm (Good)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#f39c12;"></span> -80 ~ -100 dBm (Fair)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#e74c3c;"></span> &lt; -100 dBm (Poor)</div>
+        <div class="legend-title" style="margin-top:8px;">Station Load (Size &amp; Color)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#0984e3; width:8px; height:8px;"></span> 1-10 users</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#00cec9; width:10px; height:10px;"></span> 10-25 users</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#fdcb6e; width:12px; height:12px;"></span> 25-50 users</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#e17055; width:14px; height:14px;"></span> 50+ users</div>
     </div>
 
     <!-- Server Settings Modal -->

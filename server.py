@@ -245,6 +245,57 @@ def get_app_categories():
     return jsonify(get_app_category_summary())
 
 # ==========================================
+# Simulation API Routes (Phase 2)
+# ==========================================
+@app.route('/api/simulation/snapshot')
+def get_simulation_snapshot():
+    """获取指定时间片的模拟快照（所有用户位置 + 连接信息）"""
+    t = request.args.get('t', 0, type=int)
+    bbox_str = request.args.get('bbox')
+    bbox = None
+    if bbox_str:
+        try:
+            parts = [float(x) for x in bbox_str.split(',')]
+            if len(parts) == 4:
+                bbox = parts  # [min_lng, min_lat, max_lng, max_lat]
+        except ValueError:
+            pass
+    result = dm.get_simulation_snapshot(t, bbox=bbox)
+    if 'error' in result:
+        return jsonify(result), 400
+    return jsonify(result)
+
+@app.route('/api/simulation/station_locs')
+def get_simulation_station_locs():
+    """返回 serving_base_id(numeric) -> [lng, lat] 的映射，前端缓存一次"""
+    return jsonify(dm.get_station_locs_by_numeric_id())
+
+@app.route('/api/simulation/station_id_map')
+def get_simulation_station_id_map():
+    """返回 hex station_id <-> serving_base_id(numeric) 的双向映射"""
+    return jsonify(dm.get_station_id_mapping())
+
+@app.route('/api/simulation/info')
+def get_simulation_info():
+    """返回模拟基本信息（时间片数量、用户数等）"""
+    return jsonify({
+        "time_slots": dm.trajectory_time_slots,
+        "total_users": len(dm.user_trajectories),
+        "station_count": len(dm.base_id_to_loc),
+    })
+
+@app.route('/api/simulation/station_time_series/<station_id>')
+def get_station_time_series(station_id):
+    """获取某基站在每个时间片的接入用户数和流量（使用 serving_base_id 数字ID）"""
+    try:
+        result = dm.get_station_time_series(station_id)
+        if 'error' in result:
+            return jsonify(result), 400
+        return jsonify(result)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid station ID"}), 400
+
+# ==========================================
 # Server Startup
 # ==========================================
 if __name__ == '__main__':
