@@ -1,10 +1,18 @@
 // ==========================================
 // 1. Config (Focused on Shanghai)
 // ==========================================
+// 从本地存储读取服务器配置，或使用默认值
+const SERVER_CONFIG = JSON.parse(localStorage.getItem('serverConfig')) || {
+    host: '127.0.0.1',
+    port: '7860',
+    protocol: 'http'
+};
+
 const CONFIG = {
-    MAPBOX_TOKEN: 'YOUR_MAPBOX_TOKEN_HERE',
-    API_BASE: 'http://127.0.0.1:5000/api', // Local
-    // API_BASE: '/api',  // Online
+    MAPBOX_TOKEN: window.MAPBOX_TOKEN || 'YOUR_MAPBOX_TOKEN_HERE',
+    get API_BASE() {
+        return `${SERVER_CONFIG.protocol}://${SERVER_CONFIG.host}:${SERVER_CONFIG.port}/api`;
+    },
     
     // Shanghai City Center
     DEFAULT_CENTER: [121.4737, 31.2304], 
@@ -32,6 +40,33 @@ let optimalMarker = null;
 let energyMainChartInstance = null;
 let energyDeltaChartInstance = null;
 let isControlMode = false;
+let isUserMode = false;
+let isSimMode = false;
+let simStationLocs = null;     // {numeric_base_id: [lng, lat]}
+let simSnapshotCache = {};     // {time_index: snapshotData}
+let simCurrentTime = 0;
+let simTimeSlots = 336;
+let simAnimFrameId = null;
+let simIsPlaying = false;
+let simLayerVisibility = { dots: true, lines: true, heatmap: false, handovers: true };
+let simStationIdMap = null;    // {hex_to_numeric: {}, numeric_to_hex: {}}
+let simSelectedStationHexId = null;  // currently selected station hex id in sim mode
+let simSelectedStationCoords = null; // [lng, lat] of selected station
+let userTrajectoryLayer = null;
+let userTrajectoryMarkers = [];
+let currentUserStats = null;
+let simPlaybackSpeed = 1;  // 0.5x, 1x, 2x, 4x
+let _dashOffset = 0;  // animated dash offset counter
+let _dashAnimFrame = null;
+
+// APP category emoji mapping
+const APP_CAT_EMOJI = {
+    'Social Networking': '💬', 'Games': '🎮', 'Entertainment': '🎬', 'Music': '🎵',
+    'Shopping': '🛒', 'Navigation': '🗺️', 'News': '📰', 'Finance': '💳',
+    'Photo & Video': '📸', 'Education': '📚', 'Health & Fitness': '💪', 'Travel': '✈️',
+    'Sports': '⚽', 'Weather': '🌤️', 'Utilities': '⚙️', 'Business': '💼',
+    'Lifestyle': '🏠', 'Books': '📖', 'References': '🔍'
+};
 
 // ==========================================
 // 3. API Logic
@@ -67,6 +102,108 @@ async function fetchPrediction(id) {
     }
 }
 
+// --- User Data API Functions ---
+async function fetchUserStats() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/users/stats`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch user stats error:', e);
+        return null;
+    }
+}
+
+async function fetchUsersByBase(baseId) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/users/by_base/${baseId}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch users by base error:', e);
+        return { users: [] };
+    }
+}
+
+async function fetchUserDetail(userId) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/users/${userId}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch user detail error:', e);
+        return null;
+    }
+}
+
+async function fetchUserTrajectory(userId, limit = 200) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/users/${userId}/trajectory?limit=${limit}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch user trajectory error:', e);
+        return { records: [] };
+    }
+}
+
+async function fetchAppModels() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/app_models`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch app models error:', e);
+        return null;
+    }
+}
+
+// --- Simulation API Functions ---
+async function fetchSimulationSnapshot(timeIndex) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/snapshot?t=${timeIndex}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch simulation snapshot error:', e);
+        return null;
+    }
+}
+
+async function fetchSimulationStationLocs() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/station_locs`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch simulation station locs error:', e);
+        return null;
+    }
+}
+
+async function fetchSimulationInfo() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/info`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch simulation info error:', e);
+        return null;
+    }
+}
+
+async function fetchSimStationIdMap() {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/station_id_map`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch station id map error:', e);
+        return null;
+    }
+}
+
+async function fetchStationTimeSeries(stationId) {
+    try {
+        const res = await fetch(`${CONFIG.API_BASE}/simulation/station_time_series/${stationId}`);
+        return await res.json();
+    } catch (e) {
+        console.error('Fetch station time series error:', e);
+        return null;
+    }
+}
+
 function loadSatellitePatch(lng, lat) {
     // Logic for loading static satellite imagery patch
     const img = document.getElementById('satellite-patch');
@@ -84,31 +221,48 @@ function loadSatellitePatch(lng, lat) {
 // ==========================================
 // 4. Chart Logic (Normal & Prediction)
 // ==========================================
-function renderChart(recordData) {
+function renderChart(recordData, secondaryData = null, options = {}) {
     const ctx = document.getElementById('energyChart').getContext('2d');
     if (chartInstance) chartInstance.destroy();
 
+    const datasets = [
+        { 
+            label: options.label1 || 'Traffic', data: recordData, 
+            borderColor: options.color1 || '#00cec9', backgroundColor: options.bg1 || 'rgba(0, 206, 201, 0.1)', 
+            borderWidth: 1.5, fill: true, pointRadius: 0, tension: 0.3,
+            yAxisID: 'y'
+        },
+        { 
+            label: 'Current', data: [], type: 'scatter', 
+            pointRadius: 6, pointBackgroundColor: '#ffffff', 
+            pointBorderColor: '#e84393', pointBorderWidth: 3,
+            yAxisID: 'y'
+        }
+    ];
+    
+    const scales = { 
+        x: { display: false }, 
+        y: { position: 'left', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748b', font: {size: 10} } } 
+    };
+
+    // Dual-axis: add secondary dataset (e.g. traffic alongside user counts)
+    if (secondaryData) {
+        datasets.push({
+            label: options.label2 || 'Traffic (MB)', data: secondaryData,
+            borderColor: options.color2 || '#fdcb6e', backgroundColor: 'transparent',
+            borderWidth: 1, fill: false, pointRadius: 0, tension: 0.3, borderDash: [4, 2],
+            yAxisID: 'y2'
+        });
+        scales.y2 = { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#fdcb6e', font: {size: 9} } };
+    }
+
     chartInstance = new Chart(ctx, {
         type: 'line',
-        data: { 
-            labels: recordData.map((_, i) => i), 
-            datasets: [
-                { 
-                    label: 'Traffic', data: recordData, 
-                    borderColor: '#00cec9', backgroundColor: 'rgba(0, 206, 201, 0.1)', 
-                    borderWidth: 1.5, fill: true, pointRadius: 0, tension: 0.3 
-                },
-                { 
-                    label: 'Current', data: [], type: 'scatter', 
-                    pointRadius: 6, pointBackgroundColor: '#ffffff', 
-                    pointBorderColor: '#e84393', pointBorderWidth: 3 
-                }
-            ] 
-        },
+        data: { labels: recordData.map((_, i) => i), datasets },
         options: { 
             responsive: true, maintainAspectRatio: false, animation: false,
-            plugins: { legend: { display: false } }, 
-            scales: { x: { display: false }, y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748b', font: {size: 10} } } } 
+            plugins: { legend: { display: !!secondaryData, labels: { color: '#aaa', font: {size: 9}, boxWidth: 12 } } }, 
+            scales
         }
     });
 }
@@ -458,6 +612,33 @@ function setupInteraction(map) {
         const coordinates = e.features[0].geometry.coordinates.slice();
         const id = e.features[0].properties.id;
 
+        // In simulation mode, show station sim stats
+        if (isSimMode) {
+            if (currentMarker) currentMarker.remove();
+            currentMarker = new mapboxgl.Marker({ color: '#ff6348' }).setLngLat(coordinates).addTo(map);
+            map.flyTo({ center: coordinates, zoom: 15, pitch: 0, speed: 1.5 });
+            document.getElementById('selected-id').innerText = id;
+
+            // Remember selected station for auto-refresh on timeline change
+            simSelectedStationHexId = id;
+            simSelectedStationCoords = coordinates;
+
+            // Update station panel with current snapshot
+            updateSimStationPanel();
+
+            // Fetch and render time series chart (dual axis: users + traffic)
+            const ts = await fetchStationTimeSeries(id);
+            if (ts && ts.user_counts) {
+                renderChart(ts.user_counts, ts.traffic_totals, {
+                    label1: 'Users', color1: '#0984e3', bg1: 'rgba(9,132,227,0.15)',
+                    label2: 'Traffic (MB)', color2: '#fdcb6e'
+                });
+                // Position cursor at current sim time
+                updateChartCursor(simCurrentTime);
+            }
+            return;
+        }
+
 
         if (isPredictionMode || isControlMode) {
             
@@ -607,6 +788,11 @@ function setupInteraction(map) {
         map.flyTo({ center: coordinates, zoom: 15, pitch: pitch > 10 ? 60 : 0, speed: 1.5 });
         
         document.getElementById('selected-id').innerText = id;
+
+        // If user mode is on, load associated users
+        if (isUserMode) {
+            showStationUsers(id, map);
+        }
 
         try {
             document.getElementById('station-details').innerHTML = '<p class="placeholder-text">Loading details...</p>';
@@ -857,8 +1043,8 @@ function setupModeToggle(map) {
     if (!btn) return;
 
     btn.onclick = () => {
-        if (isPredictionMode || isControlMode) {
-            alert("Please exit AI Mode (Prediction / Energy Control) before switching to 3D.");
+        if (isPredictionMode || isControlMode || isSimMode) {
+            alert("Please exit AI Mode (Prediction / Energy Control / Simulation) before switching to 3D.");
             return;
         }
 
@@ -1093,6 +1279,8 @@ function setupPanelToggles(map) {
             let activePanel = null;
             if (predPanel && predPanel.classList.contains('active')) activePanel = predPanel;
             if (ctrlPanel && ctrlPanel.classList.contains('active')) activePanel = ctrlPanel;
+            const userPanel = document.getElementById('user-panel');
+            if (userPanel && userPanel.classList.contains('active')) activePanel = userPanel;
 
             if (activePanel) {
                 activePanel.classList.toggle('collapsed');
@@ -1134,6 +1322,8 @@ window.onload = async () => {
             // Bind Interactions
             setupPredictionMode(map);   // Initialize AI Prediction events
             setupControlMode(map);
+            setupUserMode(map);         // Initialize User Analytics
+            setupSimulationMode(map);   // Initialize Simulation Mode
             setupInteraction(map);      // Initialize standard map clicks/popups
             setupModeToggle(map);       // 2D/3D View switch
             setupDataToggle(map);       // Layer visibility switch
@@ -1145,6 +1335,9 @@ window.onload = async () => {
 
             // Remove Loading Screen
             document.getElementById('loading').style.display = 'none';
+            
+            // Initialize server settings
+            setupServerSettings();
         } catch (e) {
             console.error(e);
             alert('System Initialization Failed. Check Console.');
@@ -1152,3 +1345,1178 @@ window.onload = async () => {
         }
     });
 };
+
+// ==========================================
+// User Panel Logic
+// ==========================================
+const ROLE_COLORS = {
+    service_worker: '#e84393',
+    office_worker: '#0984e3',
+    student: '#00cec9',
+    factory_worker: '#fdcb6e',
+    freelancer: '#6c5ce7',
+    healthcare_worker: '#00b894'
+};
+
+const ROLE_LABELS = {
+    service_worker: 'Service Worker',
+    office_worker: 'Office Worker',
+    student: 'Student',
+    factory_worker: 'Factory Worker',
+    freelancer: 'Freelancer',
+    healthcare_worker: 'Healthcare'
+};
+
+function setupUserMode(map) {
+    const userBtn = document.getElementById('user-toggle');
+    const userPanel = document.getElementById('user-panel');
+    const closeUserBtn = document.getElementById('close-user-btn');
+    if (!userBtn) return;
+
+    userBtn.addEventListener('click', async () => {
+        if (!isUserMode && isPredictionMode) document.getElementById('predict-toggle').click();
+        if (!isUserMode && isControlMode) document.getElementById('control-toggle').click();
+
+        isUserMode = !isUserMode;
+        if (isUserMode) {
+            userBtn.classList.add('predict-on');
+            userBtn.innerHTML = '<span class="icon">👤</span> Users: ON';
+            userPanel.classList.add('active');
+            const rightBtn = document.getElementById('toggle-right-btn');
+            if (rightBtn) rightBtn.classList.add('active');
+            await loadUserOverview();
+            await loadAppModels();
+        } else {
+            userBtn.classList.remove('predict-on');
+            userBtn.innerHTML = '<span class="icon">👤</span> Users';
+            userPanel.classList.remove('active');
+            userPanel.classList.remove('collapsed');
+            const rightBtn = document.getElementById('toggle-right-btn');
+            if (rightBtn) {
+                rightBtn.innerText = '▶';
+                rightBtn.classList.remove('active');
+                rightBtn.classList.remove('collapsed');
+            }
+            clearUserTrajectory(map);
+        }
+    });
+
+    if (closeUserBtn) closeUserBtn.addEventListener('click', () => userBtn.click());
+}
+
+async function loadUserOverview() {
+    const statsDiv = document.getElementById('user-stats-content');
+    const roleBars = document.getElementById('role-bars');
+    const data = await fetchUserStats();
+    if (!data || !data.loaded) {
+        statsDiv.innerHTML = '<p style="color: #ff6b6b;">User data not available</p>';
+        return;
+    }
+    currentUserStats = data;
+
+    statsDiv.innerHTML = `
+        <div class="stat-card">
+            <div class="stat-number">${(data.total_users).toLocaleString()}</div>
+            <div class="stat-label">Total Users</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">${(data.total_trajectories / 1e6).toFixed(1)}M</div>
+            <div class="stat-label">Trajectories</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">${Object.keys(data.roles).length}</div>
+            <div class="stat-label">Role Types</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number">${data.users_with_trajectories.toLocaleString()}</div>
+            <div class="stat-label">With Trajectory</div>
+        </div>`;
+
+    // Role distribution bars
+    const maxCount = Math.max(...Object.values(data.roles));
+    roleBars.innerHTML = Object.entries(data.roles)
+        .sort((a, b) => b[1] - a[1])
+        .map(([role, count]) => {
+            const pct = (count / maxCount * 100).toFixed(0);
+            const color = ROLE_COLORS[role] || '#888';
+            const label = ROLE_LABELS[role] || role;
+            return `<div class="role-bar-item">
+                <span class="role-name">${label}</span>
+                <div class="bar-wrapper"><div class="bar-fill" style="width:${pct}%; background:${color};"></div></div>
+                <span class="bar-count">${count}</span>
+            </div>`;
+        }).join('');
+}
+
+async function loadAppModels() {
+    const container = document.getElementById('app-models-content');
+    const data = await fetchAppModels();
+    if (!data) { container.innerHTML = '<p style="color:#888">Not available</p>'; return; }
+
+    const modelColors = { video: '#e84393', social: '#0984e3', gaming: '#fdcb6e', browsing: '#00cec9' };
+    container.innerHTML = Object.entries(data).map(([key, m]) => {
+        const color = modelColors[key] || '#888';
+        return `<div class="app-model-card" style="border-left: 3px solid ${color};">
+            <div class="model-name" style="color:${color}">${m.name_en}</div>
+            <div class="model-desc">${m.description}</div>
+            <div class="model-stats">
+                <span>↑ ${m.avg_bandwidth_mbps} Mbps</span>
+                <span>↓ DL ${(m.downlink_ratio * 100).toFixed(0)}%</span>
+                <span>⏱ ${m.latency_sensitivity}</span>
+            </div>
+            <div style="margin-top:4px; font-size:10px; color:#666;">${m.categories.join(', ')}</div>
+        </div>`;
+    }).join('');
+}
+
+async function showStationUsers(baseId, map) {
+    const section = document.getElementById('station-users-section');
+    const list = document.getElementById('station-users-list');
+    const badge = document.getElementById('station-users-badge');
+    if (!isUserMode) return;
+
+    section.style.display = 'block';
+    list.innerHTML = '<p style="color:#888; font-size:12px;">Loading...</p>';
+    badge.textContent = `Station #${baseId}`;
+
+    const data = await fetchUsersByBase(baseId);
+    if (!data.users || data.users.length === 0) {
+        list.innerHTML = '<p style="color:#888; font-size:12px;">No users at this station</p>';
+        return;
+    }
+
+    list.innerHTML = data.users.slice(0, 30).map(u => {
+        const color = ROLE_COLORS[u.role] || '#888';
+        const label = ROLE_LABELS[u.role] || u.role;
+        return `<div class="user-list-item" data-uid="${u.user_id}">
+            <span class="user-id">${u.user_id.substring(0, 12)}...</span>
+            <span class="role-badge" style="border: 1px solid ${color}; color: ${color};">${label}</span>
+        </div>`;
+    }).join('') + (data.users.length > 30 ? `<p style="color:#666; font-size:11px; text-align:center; margin-top:8px;">...and ${data.users.length - 30} more</p>` : '');
+
+    // Click user in list
+    list.querySelectorAll('.user-list-item').forEach(item => {
+        item.addEventListener('click', () => showUserDetail(item.dataset.uid, map));
+    });
+}
+
+async function showUserDetail(userId, map) {
+    const section = document.getElementById('user-detail-section');
+    const content = document.getElementById('user-detail-content');
+    section.style.display = 'block';
+    content.innerHTML = '<p style="color:#888;">Loading user profile...</p>';
+
+    const data = await fetchUserDetail(userId);
+    if (!data) { content.innerHTML = '<p style="color:#ff6b6b;">Error loading user</p>'; return; }
+
+    const color = ROLE_COLORS[data.role] || '#888';
+    const label = ROLE_LABELS[data.role] || data.role;
+    content.innerHTML = `
+        <div style="background:rgba(0,0,0,0.3); padding:10px; border-radius:6px; margin-bottom:8px;">
+            <p style="font-size:12px; color:#ccc;"><strong style="color:#a29bfe;">ID:</strong> <span style="font-family:monospace;">${data.user_id}</span></p>
+            <p style="font-size:12px; color:#ccc;"><strong style="color:#a29bfe;">Role:</strong> <span style="color:${color}">${label}</span></p>
+            <p style="font-size:12px; color:#ccc;"><strong style="color:#a29bfe;">Trajectory:</strong> ${(data.trajectory_count || 0).toLocaleString()} records</p>
+        </div>
+        ${data.app_summary ? `<div style="margin-top:6px;">
+            <p style="font-size:11px; color:#888; margin-bottom:4px;">APP USAGE:</p>
+            ${Object.entries(data.app_summary).map(([cat, cnt]) => 
+                `<span style="display:inline-block; font-size:10px; background:rgba(162,155,254,0.1); border:1px solid rgba(162,155,254,0.2); padding:2px 6px; border-radius:4px; margin:2px; color:#ccc;">${cat}: ${cnt}</span>`
+            ).join('')}
+        </div>` : ''}`;
+
+    // Setup trajectory button
+    const trajBtn = document.getElementById('show-trajectory-btn');
+    trajBtn.onclick = async () => {
+        trajBtn.innerHTML = '<span class="icon">⏳</span> Loading...';
+        await renderUserTrajectory(userId, map);
+        trajBtn.innerHTML = '<span class="icon">🗺️</span> Show Trajectory on Map';
+    };
+}
+
+async function renderUserTrajectory(userId, map) {
+    clearUserTrajectory(map);
+    const data = await fetchUserTrajectory(userId, 500);
+    if (!data.records || data.records.length === 0) return;
+
+    // records: [[timestamp, base_id, lng, lat, app_cat, ...], ...]
+    const coords = data.records
+        .filter(r => r[2] && r[3])
+        .map(r => [r[2], r[3]]);
+    
+    if (coords.length === 0) return;
+
+    // Add trajectory line
+    map.addSource('user-trajectory', {
+        type: 'geojson',
+        data: {
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates: coords }
+        }
+    });
+
+    map.addLayer({
+        id: 'user-trajectory-line',
+        type: 'line',
+        source: 'user-trajectory',
+        paint: {
+            'line-color': '#a29bfe',
+            'line-width': 2.5,
+            'line-opacity': 0.8,
+            'line-dasharray': [2, 1]
+        }
+    });
+
+    // Add start/end markers
+    const startEl = document.createElement('div');
+    startEl.style.cssText = 'width:12px;height:12px;background:#00b894;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px #00b894;';
+    const endEl = document.createElement('div');
+    endEl.style.cssText = 'width:12px;height:12px;background:#e84393;border-radius:50%;border:2px solid #fff;box-shadow:0 0 8px #e84393;';
+
+    const startMarker = new mapboxgl.Marker(startEl).setLngLat(coords[0]).addTo(map);
+    const endMarker = new mapboxgl.Marker(endEl).setLngLat(coords[coords.length - 1]).addTo(map);
+    userTrajectoryMarkers.push(startMarker, endMarker);
+    userTrajectoryLayer = 'user-trajectory';
+
+    // Fit bounds to trajectory
+    const bounds = coords.reduce((b, c) => b.extend(c), new mapboxgl.LngLatBounds(coords[0], coords[0]));
+    map.fitBounds(bounds, { padding: 80, maxZoom: 15 });
+}
+
+function clearUserTrajectory(map) {
+    if (map.getLayer('user-trajectory-line')) map.removeLayer('user-trajectory-line');
+    if (map.getSource('user-trajectory')) map.removeSource('user-trajectory');
+    userTrajectoryMarkers.forEach(m => m.remove());
+    userTrajectoryMarkers = [];
+    userTrajectoryLayer = null;
+}
+
+// ==========================================
+// Simulation Mode (Phase 2)
+// ==========================================
+
+function setupSimulationMode(map) {
+    const simBtn = document.getElementById('sim-toggle');
+    const simControls = document.getElementById('sim-controls');
+    const simLegend = document.getElementById('sim-legend');
+    if (!simBtn) return;
+
+    simBtn.addEventListener('click', async () => {
+        // Exit other modes first
+        if (!isSimMode && isPredictionMode) document.getElementById('predict-toggle').click();
+        if (!isSimMode && isControlMode) document.getElementById('control-toggle').click();
+        if (!isSimMode && isUserMode) document.getElementById('user-toggle').click();
+
+        isSimMode = !isSimMode;
+
+        if (isSimMode) {
+            simBtn.classList.add('predict-on');
+            simBtn.innerHTML = '<span class="icon">\ud83c\udf10</span> Sim: ON';
+
+            // Switch to 2D
+            const pitch = map.getPitch();
+            if (pitch > 10) {
+                const viewBtn = document.getElementById('view-toggle');
+                if (viewBtn) viewBtn.click();
+            }
+
+            simControls.style.display = 'block';
+            simLegend.style.display = 'block';
+
+            // Load station locs mapping (one-time)
+            if (!simStationLocs) {
+                const [locs, idMap] = await Promise.all([
+                    fetchSimulationStationLocs(),
+                    fetchSimStationIdMap()
+                ]);
+                simStationLocs = locs;
+                simStationIdMap = idMap;
+                console.log(`[Sim] Station locs loaded: ${Object.keys(simStationLocs || {}).length}`);
+            }
+
+            // Get simulation info
+            const info = await fetchSimulationInfo();
+            if (info && info.time_slots) {
+                simTimeSlots = info.time_slots;
+            }
+
+            // Update time slider for simulation (7 days, 30-min slots)
+            const slider = document.getElementById('time-slider');
+            if (slider) {
+                slider._originalMax = slider.max;  // Save original
+                slider.max = simTimeSlots - 1;
+                slider.value = 0;
+            }
+
+            // Initialize simulation layers
+            initSimulationLayers(map);
+
+            // Load first snapshot
+            await updateSimulationSnapshot(map, 0);
+
+            // Setup layer toggle buttons
+            setupSimLayerToggles(map);
+
+            // Override time slider for simulation (once)
+            if (!map._simTimelineSetup) {
+                setupSimTimeline(map);
+                setupSimUserPopup(map);
+                map._simTimelineSetup = true;
+            }
+
+        } else {
+            simBtn.classList.remove('predict-on');
+            simBtn.innerHTML = '<span class="icon">\ud83c\udf10</span> Simulation';
+            simControls.style.display = 'none';
+            simLegend.style.display = 'none';
+
+            // Stop playback
+            if (simAnimFrameId) { clearTimeout(simAnimFrameId); simAnimFrameId = null; }
+            simIsPlaying = false;
+            const playBtn = document.getElementById('play-btn');
+            if (playBtn) playBtn.innerText = '\u25b6';
+
+            // Restore time slider
+            const slider = document.getElementById('time-slider');
+            if (slider && slider._originalMax) {
+                slider.max = slider._originalMax;
+                slider.value = 0;
+            }
+
+            // Remove simulation layers
+            cleanupSimulationLayers(map);
+            if (_simPopup) { _simPopup.remove(); _simPopup = null; }
+            simSnapshotCache = {};
+            simSelectedStationHexId = null;
+            simSelectedStationCoords = null;
+        }
+    });
+}
+
+function initSimulationLayers(map) {
+    // --- Station overlay: color stations by user count ---
+    if (!map.getSource('sim-station-stats')) {
+        map.addSource('sim-station-stats', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+    if (!map.getLayer('sim-station-overlay')) {
+        map.addLayer({
+            id: 'sim-station-overlay',
+            type: 'circle',
+            source: 'sim-station-stats',
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['get', 'users'],
+                    0, 4,
+                    5, 6,
+                    15, 10,
+                    30, 14,
+                    60, 20
+                ],
+                'circle-color': [
+                    'interpolate', ['linear'], ['get', 'users'],
+                    0, '#2c3e50',
+                    3, '#0984e3',
+                    10, '#00cec9',
+                    25, '#fdcb6e',
+                    50, '#e17055',
+                    80, '#d63031'
+                ],
+                'circle-opacity': 0.85,
+                'circle-stroke-width': 1.5,
+                'circle-stroke-color': 'rgba(255,255,255,0.6)'
+            }
+        });
+    }
+
+    // Dim existing 3D pillars in sim mode
+    if (map.getLayer('stations-3d-pillars')) {
+        map.setPaintProperty('stations-3d-pillars', 'fill-extrusion-opacity', 0.15);
+    }
+    if (map.getLayer('stations-heatmap')) {
+        map.setLayoutProperty('stations-heatmap', 'visibility', 'none');
+    }
+
+    // Station pulse ring for high-load stations (>30 users)
+    if (!map.getLayer('sim-station-pulse')) {
+        map.addLayer({
+            id: 'sim-station-pulse',
+            type: 'circle',
+            source: 'sim-station-stats',
+            filter: ['>', ['get', 'users'], 30],
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['get', 'users'],
+                    30, 18, 60, 30, 100, 40
+                ],
+                'circle-color': 'transparent',
+                'circle-stroke-width': 2,
+                'circle-stroke-color': '#d63031',
+                'circle-stroke-opacity': [
+                    'interpolate', ['linear'], ['get', 'users'],
+                    30, 0.3, 60, 0.5, 100, 0.8
+                ]
+            }
+        });
+    }
+
+    // Start dash flow animation for connection lines
+    startDashAnimation(map);
+
+    // --- Handover arcs source ---
+    if (!map.getSource('sim-handovers')) {
+        map.addSource('sim-handovers', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+    if (!map.getLayer('sim-handover-arcs')) {
+        map.addLayer({
+            id: 'sim-handover-arcs',
+            type: 'line',
+            source: 'sim-handovers',
+            paint: {
+                'line-color': '#a29bfe',
+                'line-width': 2,
+                'line-opacity': 0.7,
+                'line-dasharray': [3, 2]
+            },
+            layout: { 'visibility': 'visible' },
+            minzoom: 10
+        });
+    }
+
+    // Users points source (MUST be created before layers that reference it)
+    if (!map.getSource('sim-users')) {
+        map.addSource('sim-users', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+
+    // Handover user highlight dots (uses sim-users source)
+    if (!map.getLayer('sim-handover-dots')) {
+        map.addLayer({
+            id: 'sim-handover-dots',
+            type: 'circle',
+            source: 'sim-users',
+            filter: ['==', ['get', 'handover'], 1],
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 3, 13, 5, 16, 8
+                ],
+                'circle-color': '#a29bfe',
+                'circle-opacity': 0.9,
+                'circle-stroke-width': 2,
+                'circle-stroke-color': '#ffffff'
+            },
+            minzoom: 11
+        });
+    }
+
+    // User dots layer - person icons via symbol layer
+    if (!map.getLayer('sim-users-dots')) {
+        // Generate person icon as raw ImageData for Mapbox (SDF compatible)
+        if (!map.hasImage('person-icon')) {
+            const sz = 40;
+            const data = new Uint8ClampedArray(sz * sz * 4);
+            // Helper to set pixel alpha (SDF: white icon on transparent bg)
+            function setPixel(x, y, a) {
+                if (x < 0 || x >= sz || y < 0 || y >= sz) return;
+                const idx = (y * sz + x) * 4;
+                data[idx] = 255; data[idx+1] = 255; data[idx+2] = 255; data[idx+3] = a;
+            }
+            function fillCircle(cx, cy, r) {
+                for (let dy = -r; dy <= r; dy++) {
+                    for (let dx = -r; dx <= r; dx++) {
+                        if (dx*dx + dy*dy <= r*r) setPixel(Math.round(cx+dx), Math.round(cy+dy), 255);
+                    }
+                }
+            }
+            function drawLine(x0, y0, x1, y1, w) {
+                const steps = Math.max(Math.abs(x1-x0), Math.abs(y1-y0)) * 2;
+                for (let i = 0; i <= steps; i++) {
+                    const t = i / steps;
+                    const x = x0 + (x1-x0)*t, y = y0 + (y1-y0)*t;
+                    fillCircle(Math.round(x), Math.round(y), w);
+                }
+            }
+            // Person: head, body, arms, legs
+            fillCircle(sz/2, sz*0.20, sz*0.10);       // head
+            drawLine(sz/2, sz*0.32, sz/2, sz*0.58, 2);  // body
+            drawLine(sz*0.28, sz*0.42, sz*0.72, sz*0.42, 1); // arms
+            drawLine(sz/2, sz*0.58, sz*0.30, sz*0.85, 1);  // left leg
+            drawLine(sz/2, sz*0.58, sz*0.70, sz*0.85, 1);  // right leg
+            map.addImage('person-icon', { width: sz, height: sz, data: data }, { sdf: true });
+        }
+
+        map.addLayer({
+            id: 'sim-users-dots',
+            type: 'symbol',
+            source: 'sim-users',
+            layout: {
+                'icon-image': 'person-icon',
+                'icon-size': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 0.18,
+                    13, 0.4,
+                    16, 0.65
+                ],
+                'icon-allow-overlap': true,
+                'icon-ignore-placement': true,
+                // Show app emoji at zoom 13+, add role at zoom 15+
+                'text-field': ['step', ['zoom'], '', 13, ['get', 'app_emoji'], 15, ['concat', ['get', 'app_emoji'], ' ', ['get', 'role']]],
+                'text-size': ['step', ['zoom'], 0, 13, 12, 15, 10],
+                'text-offset': [0, 1.2],
+                'text-allow-overlap': false,
+                'text-optional': true
+            },
+            paint: {
+                'icon-color': [
+                    'step', ['get', 'signal'],
+                    '#e74c3c',
+                    -100, '#f39c12',
+                    -80, '#2ecc71'
+                ],
+                'icon-opacity': 0.85,
+                'text-color': '#ffffff',
+                'text-halo-color': 'rgba(0,0,0,0.7)',
+                'text-halo-width': 1
+            }
+        });
+    }
+
+    // User density heatmap layer (hidden by default)
+    if (!map.getLayer('sim-users-heatmap')) {
+        map.addLayer({
+            id: 'sim-users-heatmap',
+            type: 'heatmap',
+            source: 'sim-users',
+            paint: {
+                'heatmap-weight': [
+                    'interpolate', ['linear'], ['get', 'traffic'],
+                    0, 0.1,
+                    5, 0.5,
+                    50, 1
+                ],
+                'heatmap-intensity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 1, 13, 3
+                ],
+                'heatmap-color': [
+                    'interpolate', ['linear'], ['heatmap-density'],
+                    0, 'rgba(0,0,0,0)',
+                    0.1, 'rgba(10,20,60,0.4)',
+                    0.25, '#0984e3',
+                    0.45, '#00cec9',
+                    0.65, '#fdcb6e',
+                    0.85, '#e17055',
+                    1, '#ffffff'
+                ],
+                'heatmap-radius': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 8, 13, 20, 16, 30
+                ],
+                'heatmap-opacity': 0.8
+            },
+            layout: { 'visibility': 'none' }
+        });
+    }
+
+    // Connection lines source + layer
+    if (!map.getSource('sim-lines')) {
+        map.addSource('sim-lines', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+
+    if (!map.getLayer('sim-lines-layer')) {
+        map.addLayer({
+            id: 'sim-lines-layer',
+            type: 'line',
+            source: 'sim-lines',
+            paint: {
+                'line-color': [
+                    'step', ['get', 'signal'],
+                    '#e74c3c',
+                    -100, '#f39c12',
+                    -80, '#2ecc71'
+                ],
+                'line-width': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 0.3,
+                    13, 1,
+                    16, 2
+                ],
+                'line-opacity': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 0.15,
+                    12, 0.45,
+                    16, 0.75
+                ]
+            },
+            layout: {
+                'visibility': 'visible',
+                'line-cap': 'round',
+                'line-join': 'round'
+            },
+            minzoom: 9
+        });
+    }
+}
+
+function cleanupSimulationLayers(map) {
+    const layers = ['sim-users-dots', 'sim-users-heatmap', 'sim-lines-layer', 'sim-station-overlay', 'sim-handover-arcs', 'sim-handover-dots', 'sim-station-pulse'];
+    layers.forEach(id => {
+        if (map.getLayer(id)) map.removeLayer(id);
+    });
+    if (map.getSource('sim-users')) map.removeSource('sim-users');
+    if (map.getSource('sim-lines')) map.removeSource('sim-lines');
+    if (map.getSource('sim-station-stats')) map.removeSource('sim-station-stats');
+    if (map.getSource('sim-handovers')) map.removeSource('sim-handovers');
+
+    // Stop dash animation
+    if (_dashAnimFrame) { cancelAnimationFrame(_dashAnimFrame); _dashAnimFrame = null; }
+
+    // Remove stats dashboard
+    const dash = document.getElementById('sim-stats-dashboard');
+    if (dash) dash.remove();
+
+    // Restore original station layers
+    if (map.getLayer('stations-3d-pillars')) {
+        map.setPaintProperty('stations-3d-pillars', 'fill-extrusion-opacity', 0.7);
+    }
+    if (map.getLayer('stations-heatmap')) {
+        map.setLayoutProperty('stations-heatmap', 'visibility', 'visible');
+    }
+}
+
+let _simPopup = null;
+
+function setupSimUserPopup(map) {
+    // Click on user dot in sim mode => show info popup
+    map.on('click', 'sim-users-dots', (e) => {
+        if (!isSimMode || !e.features || !e.features.length) return;
+        e.originalEvent.stopPropagation();
+        const p = e.features[0].properties;
+        const coords = e.features[0].geometry.coordinates.slice();
+
+        const signalColor = p.signal > -80 ? '#2ecc71' : p.signal > -100 ? '#f39c12' : '#e74c3c';
+        const signalLabel = p.signal > -80 ? 'Good' : p.signal > -100 ? 'Fair' : 'Poor';
+        const moveIcon = p.movement === 'stationary' || p.movement === 'stay' ? '🏠' : p.movement === 'walking' ? '🚶' : p.movement === 'driving' ? '🚗' : '📍';
+        const roleLabel = p.role ? p.role.replace(/_/g, ' ') : 'unknown';
+
+        let html = `<div style="font-family:'Courier New',monospace; font-size:11px; min-width:180px;">`;
+        html += `<div style="font-weight:bold; color:#a29bfe; border-bottom:1px solid #444; padding-bottom:3px; margin-bottom:4px;">👤 ${p.user_id}</div>`;
+        html += `<div style="color:#fdcb6e; margin-bottom:2px;">💼 ${roleLabel}</div>`;
+        html += `<div style="color:#888; margin-bottom:2px;">${moveIcon} ${p.movement || 'unknown'}</div>`;
+        html += `<div>Signal: <span style="color:${signalColor}; font-weight:bold;">${p.signal} dBm</span> (${signalLabel})</div>`;
+        html += `<div>Traffic: <span style="color:#00cec9;">${Number(p.traffic).toFixed(2)} MB</span></div>`;
+        if (p.app_name) {
+            const appEmoji = APP_CAT_EMOJI[p.app_category] || '📱';
+            html += `<div>${appEmoji} <span style="color:#fdcb6e;">${p.app_name}</span> <span style="color:#888; font-size:10px;">(${p.app_category})</span></div>`;
+        }
+        else if (p.app_category) {
+            const appEmoji = APP_CAT_EMOJI[p.app_category] || '📱';
+            html += `<div>${appEmoji} <span style="color:#fdcb6e;">${p.app_category}</span></div>`;
+        }
+        if (p.handover === 1 || p.handover === '1') html += `<div style="color:#a29bfe; margin-top:3px;">🔄 Handover occurred</div>`;
+        html += `</div>`;
+
+        if (_simPopup) _simPopup.remove();
+        _simPopup = new mapboxgl.Popup({ closeButton: true, closeOnClick: true, className: 'cyber-popup', maxWidth: '220px' })
+            .setLngLat(coords)
+            .setHTML(html)
+            .addTo(map);
+    });
+
+    map.on('mouseenter', 'sim-users-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'sim-users-dots', () => { if (isSimMode) map.getCanvas().style.cursor = ''; });
+}
+
+function prefetchAdjacentSnapshots(currentIndex) {
+    // Prefetch next 5 snapshots in background for smoother playback
+    const toFetch = [1, 2, 3, 4, 5].map(d => currentIndex + d).filter(i => i < simTimeSlots && !simSnapshotCache[i]);
+    toFetch.forEach(i => {
+        fetchSimulationSnapshot(i).then(data => {
+            if (data && !data.error && !simSnapshotCache[i]) {
+                simSnapshotCache[i] = data;
+            }
+        }).catch(() => {});
+    });
+}
+
+let _simDebounceTimer = null;
+
+async function updateSimulationSnapshot(map, timeIndex) {
+    // Check cache first
+    let data = simSnapshotCache[timeIndex];
+    if (!data) {
+        data = await fetchSimulationSnapshot(timeIndex);
+        if (!data || data.error) {
+            console.error('[Sim] Snapshot error:', data?.error);
+            return;
+        }
+        // Cache (keep max 50 snapshots)
+        simSnapshotCache[timeIndex] = data;
+        const keys = Object.keys(simSnapshotCache);
+        if (keys.length > 50) {
+            delete simSnapshotCache[keys[0]];
+        }
+        // Prefetch adjacent snapshots in background
+        prefetchAdjacentSnapshots(timeIndex);
+    }
+
+    simCurrentTime = timeIndex;
+
+    // Build user point features
+    const pointFeatures = [];
+    const lineFeatures = [];
+
+    for (const u of data.users) {
+        // u = [lng, lat, base_id, signal_dbm, traffic_mb, handover_flag, user_id, movement, app_category, role, app_name]
+        const lng = u[0], lat = u[1], baseId = u[2], signal = u[3], traffic = u[4], handover = u[5] || 0;
+        const userId = u[6] || '', movement = u[7] || '', appCat = u[8] || '';
+        const role = u[9] || '', appName = u[10] || '';
+
+        // Build GeoJSON properties - include app_emoji for label
+        const appEmoji = APP_CAT_EMOJI[appCat] || '';
+
+        pointFeatures.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [lng, lat] },
+            properties: { signal, traffic, base_id: baseId, handover, user_id: userId, movement, app_category: appCat, role, app_name: appName, app_emoji: appEmoji }
+        });
+
+        // Build connection line if station loc is known
+        if (simStationLocs) {
+            const stationLoc = simStationLocs[String(baseId)];
+            if (stationLoc) {
+                lineFeatures.push({
+                    type: 'Feature',
+                    geometry: {
+                        type: 'LineString',
+                        coordinates: [[lng, lat], stationLoc]
+                    },
+                    properties: { signal, base_id: baseId }
+                });
+            }
+        }
+    }
+
+    // Build station overlay features (color by user count)
+    const stationOverlayFeatures = [];
+    if (data.station_stats && globalStationData) {
+        const stationLocMap = {};
+        globalStationData.forEach(s => { stationLocMap[s.id] = s.loc; });
+        for (const [hexId, stats] of Object.entries(data.station_stats)) {
+            const loc = stationLocMap[hexId];
+            if (loc) {
+                stationOverlayFeatures.push({
+                    type: 'Feature',
+                    geometry: { type: 'Point', coordinates: [loc[0], loc[1]] },
+                    properties: {
+                        id: hexId,
+                        users: stats.users,
+                        traffic: stats.traffic,
+                        avg_signal: stats.avg_signal,
+                        cells: stats.cells || 1
+                    }
+                });
+            }
+        }
+    }
+
+    // Update sources
+    const usersGeo = { type: 'FeatureCollection', features: pointFeatures };
+    const linesGeo = { type: 'FeatureCollection', features: lineFeatures };
+    const stationStatsGeo = { type: 'FeatureCollection', features: stationOverlayFeatures };
+
+    if (map.getSource('sim-users')) map.getSource('sim-users').setData(usersGeo);
+    if (map.getSource('sim-lines')) map.getSource('sim-lines').setData(linesGeo);
+    if (map.getSource('sim-station-stats')) map.getSource('sim-station-stats').setData(stationStatsGeo);
+    console.log(`[Sim] t=${timeIndex}: ${pointFeatures.length} users, ${lineFeatures.length} lines, ${stationOverlayFeatures.length} stations`);
+
+    // Build handover arc features
+    const handoverArcFeatures = [];
+    if (data.handovers) {
+        for (const ho of data.handovers) {
+            // ho = [user_lng, user_lat, old_stn_lng, old_stn_lat, new_stn_lng, new_stn_lat]
+            handoverArcFeatures.push({
+                type: 'Feature',
+                geometry: {
+                    type: 'LineString',
+                    coordinates: [
+                        [ho[2], ho[3]],  // old station
+                        [ho[0], ho[1]],  // user (midpoint)
+                        [ho[4], ho[5]]   // new station
+                    ]
+                },
+                properties: {}
+            });
+        }
+    }
+    const handoverGeo = { type: 'FeatureCollection', features: handoverArcFeatures };
+    if (map.getSource('sim-handovers')) map.getSource('sim-handovers').setData(handoverGeo);
+
+    // Update UI
+    const timeDisplay = document.getElementById('sim-time-display');
+    const userCount = document.getElementById('sim-user-count');
+    if (timeDisplay) {
+        const day = Math.floor(timeIndex / 48) + 1;
+        const slotInDay = timeIndex % 48;
+        const hour = Math.floor(slotInDay / 2);
+        const min = (slotInDay % 2) * 30;
+        timeDisplay.textContent = `Day ${day} ${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+    }
+    if (userCount) {
+        const hoCount = data.handover_count || 0;
+        userCount.textContent = `${data.total_users.toLocaleString()} users` + (hoCount > 0 ? ` | ${hoCount} handovers` : '');
+    }
+
+    // Also update the main time display
+    const mainDisplay = document.getElementById('time-display');
+    if (mainDisplay && isSimMode) {
+        const day = Math.floor(timeIndex / 48) + 1;
+        const slotInDay = timeIndex % 48;
+        const hour = Math.floor(slotInDay / 2);
+        const min = (slotInDay % 2) * 30;
+        mainDisplay.innerText = `Day ${String(day).padStart(2, '0')} - ${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+    }
+
+    // Auto-refresh station panel if a station is selected
+    if (simSelectedStationHexId) {
+        updateSimStationPanel();
+    }
+
+    // Update live metrics dashboard
+    updateStatsDashboard(data);
+}
+
+/**
+ * Update the left station panel with simulation stats for the currently selected station.
+ * Called on station click AND on timeline change.
+ */
+function updateSimStationPanel() {
+    if (!simSelectedStationHexId) return;
+    const coords = simSelectedStationCoords;
+    const id = simSelectedStationHexId;
+
+    // station_stats now uses hex ID directly (after backend merge)
+    const snapshot = simSnapshotCache[simCurrentTime];
+    let stStats = null;
+    if (snapshot && snapshot.station_stats) {
+        stStats = snapshot.station_stats[id];
+    }
+
+    // Time label
+    const day = Math.floor(simCurrentTime / 48) + 1;
+    const slotInDay = simCurrentTime % 48;
+    const hour = Math.floor(slotInDay / 2);
+    const min = (slotInDay % 2) * 30;
+    const timeLabel = `Day ${day} ${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+
+    let html = `<div style="margin-top:10px;">`;
+    html += `<p><strong>Longitude:</strong> ${coords[0].toFixed(4)}</p>`;
+    html += `<p><strong>Latitude:</strong> ${coords[1].toFixed(4)}</p>`;
+    html += `<hr style="border:0; border-top:1px solid #444; margin:5px 0;">`;
+    html += `<p style="font-size:11px; color:#888; margin-bottom:6px;">⏱ ${timeLabel}</p>`;
+    if (stStats) {
+        // PRB utilization estimate: ~2 PRBs per user, 100 total PRBs
+        const prbUtil = Math.min(100, Math.round((stStats.users * 2 / 100) * 100));
+        const prbColor = prbUtil > 80 ? '#d63031' : prbUtil > 50 ? '#fdcb6e' : '#00b894';
+        html += `<p><strong style="color:#ff6348;">Connected Users:</strong> <span style="color:#fff; font-size:16px; font-weight:bold;">${stStats.users}</span></p>`;
+        html += `<p><strong style="color:#ff6348;">Total Traffic:</strong> <span style="color:#fff;">${stStats.traffic.toFixed(1)} MB</span></p>`;
+        html += `<p><strong style="color:#ff6348;">Avg Signal:</strong> <span style="color:${stStats.avg_signal > -80 ? '#2ecc71' : stStats.avg_signal > -100 ? '#f39c12' : '#e74c3c'};">${stStats.avg_signal} dBm</span></p>`;
+        html += `<p><strong style="color:#ff6348;">PRB Utilization:</strong> <span style="color:${prbColor}; font-weight:bold;">${prbUtil}%</span></p>`;
+        if (stStats.cells && stStats.cells > 1) {
+            html += `<p style="font-size:11px; color:#888; margin-top:4px;">📡 ${stStats.cells} cells at this site</p>`;
+        }
+    } else {
+        html += `<p style="color:#888;">No users connected at this time</p>`;
+    }
+    html += `</div>`;
+    document.getElementById('station-details').innerHTML = html;
+}
+
+function setupSimLayerToggles(map) {
+    const dotsBtn = document.getElementById('sim-show-dots');
+    const linesBtn = document.getElementById('sim-show-lines');
+    const heatmapBtn = document.getElementById('sim-show-heatmap');
+    const handoverBtn = document.getElementById('sim-show-handovers');
+
+    function toggleLayer(btn, layerIds, key) {
+        if (!btn) return;
+        btn.onclick = () => {
+            simLayerVisibility[key] = !simLayerVisibility[key];
+            btn.classList.toggle('active', simLayerVisibility[key]);
+            const ids = Array.isArray(layerIds) ? layerIds : [layerIds];
+            ids.forEach(id => {
+                if (map.getLayer(id)) {
+                    map.setLayoutProperty(id, 'visibility', simLayerVisibility[key] ? 'visible' : 'none');
+                }
+            });
+        };
+    }
+
+    toggleLayer(dotsBtn, 'sim-users-dots', 'dots');
+    toggleLayer(linesBtn, 'sim-lines-layer', 'lines');
+    toggleLayer(heatmapBtn, 'sim-users-heatmap', 'heatmap');
+    toggleLayer(handoverBtn, ['sim-handover-arcs', 'sim-handover-dots'], 'handovers');
+
+    // Set initial button active states to match default visibility
+    if (linesBtn) linesBtn.classList.add('active');
+    if (handoverBtn) handoverBtn.classList.add('active');
+}
+
+function setupSimTimeline(map) {
+    const slider = document.getElementById('time-slider');
+    const playBtn = document.getElementById('play-btn');
+    if (!slider || !playBtn) return;
+
+    // Override slider input for simulation
+    const simSliderHandler = (e) => {
+        if (!isSimMode) return;
+        e.stopPropagation();
+        simIsPlaying = false;
+        if (simAnimFrameId) { clearTimeout(simAnimFrameId); simAnimFrameId = null; }
+        playBtn.innerText = '\u25b6';
+
+        const val = parseInt(e.target.value);
+        // Debounce API calls when scrubbing
+        if (_simDebounceTimer) clearTimeout(_simDebounceTimer);
+        _simDebounceTimer = setTimeout(() => {
+            updateSimulationSnapshot(map, val);
+        }, 80);
+    };
+
+    slider.addEventListener('input', simSliderHandler);
+
+    // Override play button for simulation
+    const origPlayClick = playBtn.onclick;
+    playBtn.onclick = () => {
+        if (!isSimMode) {
+            if (origPlayClick) origPlayClick();
+            return;
+        }
+
+        simIsPlaying = !simIsPlaying;
+        playBtn.innerText = simIsPlaying ? '\u23f8' : '\u25b6';
+
+        if (simIsPlaying) {
+            const simPlay = async () => {
+                if (!simIsPlaying || !isSimMode) return;
+                let val = parseInt(slider.value);
+                val = (val + 1) % simTimeSlots;
+                slider.value = val;
+                await updateSimulationSnapshot(map, val);
+                if (simIsPlaying && isSimMode) {
+                    // Speed-based interval: 0.5x=600ms, 1x=300ms, 2x=150ms, 4x=75ms
+                    const interval = Math.round(300 / simPlaybackSpeed);
+                    simAnimFrameId = setTimeout(simPlay, interval);
+                }
+            };
+            simPlay();
+        } else {
+            if (simAnimFrameId) { clearTimeout(simAnimFrameId); simAnimFrameId = null; }
+        }
+    };
+
+    // Create speed control button
+    createSpeedControl();
+    // Create real-time stats dashboard
+    createStatsDashboard();
+}
+
+// ==========================================
+// Dash Flow Animation for Connection Lines
+// ==========================================
+function startDashAnimation(map) {
+    // No-op: dash animation removed for compatibility.
+    // Lines use solid styling with round caps for clean appearance.
+}
+
+// ==========================================
+// Playback Speed Control
+// ==========================================
+function createSpeedControl() {
+    const existing = document.getElementById('sim-speed-btn');
+    if (existing) return;
+    const controlsInner = document.querySelector('.sim-controls-inner');
+    if (!controlsInner) return;
+
+    const speedBtn = document.createElement('button');
+    speedBtn.id = 'sim-speed-btn';
+    speedBtn.className = 'sim-layer-btn active';
+    speedBtn.textContent = '1x';
+    speedBtn.title = 'Playback speed';
+    speedBtn.style.minWidth = '40px';
+    speedBtn.style.fontWeight = 'bold';
+
+    const speeds = [0.5, 1, 2, 4];
+    let speedIdx = 1; // default 1x
+    speedBtn.onclick = () => {
+        speedIdx = (speedIdx + 1) % speeds.length;
+        simPlaybackSpeed = speeds[speedIdx];
+        speedBtn.textContent = `${simPlaybackSpeed}x`;
+    };
+
+    // Insert before the time info div
+    const timeInfo = controlsInner.querySelector('.sim-time-info');
+    if (timeInfo) controlsInner.insertBefore(speedBtn, timeInfo);
+    else controlsInner.appendChild(speedBtn);
+}
+
+// ==========================================
+// Real-time Stats Dashboard (bottom-right)
+// ==========================================
+function createStatsDashboard() {
+    let dash = document.getElementById('sim-stats-dashboard');
+    if (dash) return;
+
+    dash = document.createElement('div');
+    dash.id = 'sim-stats-dashboard';
+    dash.innerHTML = `
+        <div class="dash-title">LIVE METRICS</div>
+        <div class="dash-grid">
+            <div class="dash-item">
+                <div class="dash-value" id="dash-users">0</div>
+                <div class="dash-label">USERS</div>
+            </div>
+            <div class="dash-item">
+                <div class="dash-value" id="dash-traffic" style="color:#00cec9;">0</div>
+                <div class="dash-label">TRAFFIC MB</div>
+            </div>
+            <div class="dash-item">
+                <div class="dash-value" id="dash-handovers" style="color:#a29bfe;">0</div>
+                <div class="dash-label">HANDOVERS</div>
+            </div>
+            <div class="dash-item">
+                <div class="dash-value" id="dash-stations" style="color:#fdcb6e;">0</div>
+                <div class="dash-label">ACTIVE STN</div>
+            </div>
+        </div>
+    `;
+    document.querySelector('.main-content').appendChild(dash);
+}
+
+function updateStatsDashboard(data) {
+    const d = document.getElementById('sim-stats-dashboard');
+    if (!d) return;
+    d.style.display = 'block';
+    const el = (id) => document.getElementById(id);
+    if (el('dash-users')) el('dash-users').textContent = (data.total_users || 0).toLocaleString();
+    if (el('dash-handovers')) el('dash-handovers').textContent = (data.handover_count || 0).toLocaleString();
+    // Calculate total traffic and active stations from station_stats
+    let totalTraffic = 0, activeStations = 0;
+    if (data.station_stats) {
+        for (const st of Object.values(data.station_stats)) {
+            totalTraffic += st.traffic || 0;
+            if (st.users > 0) activeStations++;
+        }
+    }
+    if (el('dash-traffic')) el('dash-traffic').textContent = totalTraffic > 1000 ? (totalTraffic / 1000).toFixed(1) + 'K' : Math.round(totalTraffic);
+    if (el('dash-stations')) el('dash-stations').textContent = activeStations;
+}
+
+// ==========================================
+// Server Settings Functions
+// ==========================================
+function setupServerSettings() {
+    const modal = document.getElementById('settings-modal');
+    const settingsBtn = document.getElementById('settings-btn');
+    const closeBtn = document.getElementById('close-settings');
+    const testBtn = document.getElementById('test-connection');
+    const saveBtn = document.getElementById('save-settings');
+    
+    const hostInput = document.getElementById('server-host');
+    const portInput = document.getElementById('server-port');
+    const protocolSelect = document.getElementById('server-protocol');
+    const currentApiSpan = document.getElementById('current-api');
+    const statusDiv = document.getElementById('connection-status');
+    
+    // Load current settings
+    hostInput.value = SERVER_CONFIG.host;
+    portInput.value = SERVER_CONFIG.port;
+    protocolSelect.value = SERVER_CONFIG.protocol;
+    updateCurrentApi();
+    
+    // Open modal
+    settingsBtn.addEventListener('click', () => {
+        modal.style.display = 'flex';
+        updateCurrentApi();
+    });
+    
+    // Close modal
+    closeBtn.addEventListener('click', () => {
+        modal.style.display = 'none';
+        statusDiv.className = 'status-indicator';
+        statusDiv.textContent = '';
+    });
+    
+    // Close on outside click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            modal.style.display = 'none';
+            statusDiv.className = 'status-indicator';
+            statusDiv.textContent = '';
+        }
+    });
+    
+    // Update API display when inputs change
+    [hostInput, portInput, protocolSelect].forEach(el => {
+        el.addEventListener('input', updateCurrentApi);
+    });
+    
+    function updateCurrentApi() {
+        const api = `${protocolSelect.value}://${hostInput.value}:${portInput.value}/api`;
+        currentApiSpan.textContent = api;
+    }
+    
+    // Test connection
+    testBtn.addEventListener('click', async () => {
+        const testConfig = {
+            host: hostInput.value,
+            port: portInput.value,
+            protocol: protocolSelect.value
+        };
+        const testApi = `${testConfig.protocol}://${testConfig.host}:${testConfig.port}/api`;
+        
+        statusDiv.className = 'status-indicator';
+        statusDiv.textContent = 'Testing...';
+        
+        try {
+            const response = await fetch(`${testApi}/stations/locations`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(5000)
+            });
+            
+            if (response.ok) {
+                statusDiv.className = 'status-indicator success';
+                statusDiv.textContent = '✓ Connection successful!';
+            } else {
+                statusDiv.className = 'status-indicator error';
+                statusDiv.textContent = `✗ Server error: ${response.status}`;
+            }
+        } catch (e) {
+            statusDiv.className = 'status-indicator error';
+            statusDiv.textContent = `✗ Connection failed: ${e.message}`;
+        }
+    });
+    
+    // Save settings
+    saveBtn.addEventListener('click', () => {
+        const newConfig = {
+            host: hostInput.value,
+            port: portInput.value,
+            protocol: protocolSelect.value
+        };
+        
+        localStorage.setItem('serverConfig', JSON.stringify(newConfig));
+        alert('Settings saved! The application will reload to apply changes.');
+        window.location.reload();
+    });
+}

@@ -8,6 +8,7 @@
     <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
     <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="mapbox_token.js" onerror="console.warn('mapbox_token.js not found, using default')"></script>
     
     <link rel="stylesheet" href="style.css">
 </head>
@@ -21,7 +22,10 @@
 
     <div class="sidebar">
         <div class="header">
-            <h1>Overall</h1>
+            <div class="header-top">
+                <h1>Overall</h1>
+                <button id="settings-btn" class="cyber-btn-small" title="Server Settings">⚙️</button>
+            </div>
             
             <div class="search-section">
                 <div class="search-container">
@@ -133,6 +137,54 @@
         </div>
     </div>
 
+    <div id="user-panel" class="sidebar-right user-panel-theme" style="border-color: #a29bfe; box-shadow: -5px 0 20px rgba(162, 155, 254, 0.1);">
+        <div class="header">
+            <h1 style="background: linear-gradient(to right, #a29bfe, #6c5ce7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">User Analytics</h1>
+            <button id="close-user-btn" class="cyber-btn-small" style="color:#a29bfe; border-color:#a29bfe;">✕</button>
+        </div>
+        <div class="details-content" style="flex: 1; overflow-y: auto;">
+            <!-- Overview Stats -->
+            <div id="user-overview" class="user-section">
+                <h3 class="section-title" style="color: #a29bfe;"><span class="icon">📊</span> Overview</h3>
+                <div id="user-stats-content" class="stats-grid">
+                    <p style="color: #888;">Loading user data...</p>
+                </div>
+            </div>
+
+            <!-- Role Distribution -->
+            <div id="user-roles-section" class="user-section" style="margin-top: 15px;">
+                <h3 class="section-title" style="color: #a29bfe;"><span class="icon">🏷️</span> Role Distribution</h3>
+                <div id="role-bars"></div>
+            </div>
+
+            <!-- Station Users (shown when station selected) -->
+            <div id="station-users-section" class="user-section" style="margin-top: 15px; display: none;">
+                <h3 class="section-title" style="color: #a29bfe;">
+                    <span class="icon">📡</span> Station Users
+                    <span id="station-users-badge" style="font-size: 11px; background: rgba(162,155,254,0.2); padding: 2px 8px; border-radius: 10px; margin-left: 8px;"></span>
+                </h3>
+                <div id="station-users-list"></div>
+            </div>
+
+            <!-- User Detail (shown when user clicked) -->
+            <div id="user-detail-section" class="user-section" style="margin-top: 15px; display: none;">
+                <h3 class="section-title" style="color: #a29bfe;"><span class="icon">🔍</span> User Profile</h3>
+                <div id="user-detail-content"></div>
+                <div style="margin-top: 10px;">
+                    <button id="show-trajectory-btn" class="cyber-btn" style="width: 100%; border-color: #a29bfe; color: #a29bfe; padding: 8px; font-size: 12px; justify-content: center;">
+                        <span class="icon">🗺️</span> Show Trajectory on Map
+                    </button>
+                </div>
+            </div>
+
+            <!-- APP Traffic Models -->
+            <div id="app-models-section" class="user-section" style="margin-top: 15px;">
+                <h3 class="section-title" style="color: #a29bfe;"><span class="icon">📱</span> APP Traffic Models</h3>
+                <div id="app-models-content"></div>
+            </div>
+        </div>
+    </div>
+
     <button id="toggle-left-btn" class="panel-toggle-btn left-toggle">◀</button>
     <button id="toggle-right-btn" class="panel-toggle-btn right-toggle">▶</button>
     <div class="main-content">
@@ -150,6 +202,14 @@
 
             <button id="control-toggle" class="cyber-btn" style="border-color: #2ecc71; color: #2ecc71;">
                 <span class="icon">🔋</span> Energy Control
+            </button>
+
+            <button id="user-toggle" class="cyber-btn" style="border-color: #a29bfe; color: #a29bfe;">
+                <span class="icon">👤</span> Users
+            </button>
+
+            <button id="sim-toggle" class="cyber-btn" style="border-color: #ff6348; color: #ff6348;">
+                <span class="icon">🌐</span> Simulation
             </button>
 
             <div class="filter-wrapper">
@@ -172,6 +232,72 @@
         </div>
 
         <div id="map"></div>
+    </div>
+
+    <!-- Simulation Controls (shown in sim mode) -->
+    <div id="sim-controls" class="sim-controls-bar" style="display: none;">
+        <div class="sim-controls-inner">
+            <span class="sim-label">🌐 SIMULATION</span>
+            <div class="sim-layer-toggles">
+                <button id="sim-show-dots" class="sim-layer-btn active" title="User Dots">🔵 Users</button>
+                <button id="sim-show-lines" class="sim-layer-btn" title="Connection Lines">↔️ Lines</button>
+                <button id="sim-show-heatmap" class="sim-layer-btn" title="Density Heatmap">🌡️ Heatmap</button>
+                <button id="sim-show-handovers" class="sim-layer-btn" title="Handover Events">🔄 Handovers</button>
+            </div>
+            <div class="sim-time-info">
+                <span id="sim-time-display" class="sim-time-text">Day 1 00:00</span>
+                <span id="sim-user-count" class="sim-count-text">0 users</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Simulation Legend -->
+    <div id="sim-legend" class="sim-legend" style="display: none;">
+        <div class="legend-title">Signal Quality (Users 👤)</div>
+        <div class="legend-item"><span style="color:#2ecc71; font-size:14px;">👤</span> &gt; -80 dBm (Good)</div>
+        <div class="legend-item"><span style="color:#f39c12; font-size:14px;">👤</span> -80 ~ -100 dBm (Fair)</div>
+        <div class="legend-item"><span style="color:#e74c3c; font-size:14px;">👤</span> &lt; -100 dBm (Poor)</div>
+        <div class="legend-title" style="margin-top:8px;">Station Load (Size &amp; Color)</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#0984e3; width:8px; height:8px;"></span> 1-10 users</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#00cec9; width:10px; height:10px;"></span> 10-25 users</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#fdcb6e; width:12px; height:12px;"></span> 25-50 users</div>
+        <div class="legend-item"><span class="legend-dot" style="background:#e17055; width:14px; height:14px;"></span> 50+ users</div>
+    </div>
+
+    <!-- Server Settings Modal -->
+    <div id="settings-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚙️ Server Configuration</h2>
+                <span class="close-btn" id="close-settings">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Server Host:</label>
+                    <input type="text" id="server-host" placeholder="127.0.0.1 or server IP">
+                </div>
+                <div class="form-group">
+                    <label>Port:</label>
+                    <input type="text" id="server-port" placeholder="5000">
+                </div>
+                <div class="form-group">
+                    <label>Protocol:</label>
+                    <select id="server-protocol">
+                        <option value="http">HTTP</option>
+                        <option value="https">HTTPS</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Current API:</label>
+                    <span id="current-api" style="color: #00f0ff; font-family: monospace;"></span>
+                </div>
+                <div id="connection-status" class="status-indicator"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="test-connection" class="cyber-btn">Test Connection</button>
+                <button id="save-settings" class="cyber-btn">Save & Restart</button>
+            </div>
+        </div>
     </div>
 
     <script src="script.js"></script>
