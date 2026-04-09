@@ -1029,3 +1029,61 @@ body {
     flex-shrink: 0;
     box-shadow: 0 0 4px currentColor;
 }
+
+/* =========================================
+   Real-time Stats Dashboard (bottom-right)
+   ========================================= */
+#sim-stats-dashboard {
+    position: absolute;
+    bottom: 130px;
+    right: 20px;
+    z-index: 100;
+    background: rgba(10, 15, 30, 0.92);
+    border: 1px solid rgba(0, 206, 201, 0.3);
+    border-radius: 10px;
+    padding: 12px 16px;
+    backdrop-filter: blur(12px);
+    min-width: 200px;
+    display: none;
+}
+
+.dash-title {
+    font-size: 9px;
+    font-weight: 700;
+    color: #00cec9;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid rgba(0, 206, 201, 0.15);
+    padding-bottom: 6px;
+}
+
+.dash-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.dash-item {
+    text-align: center;
+    padding: 6px 4px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.dash-value {
+    font-size: 18px;
+    font-weight: bold;
+    color: #ff6348;
+    font-family: 'Courier New', monospace;
+    line-height: 1.2;
+}
+
+.dash-label {
+    font-size: 8px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 2px;
+}

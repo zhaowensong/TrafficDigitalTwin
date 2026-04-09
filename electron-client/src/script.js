@@ -48,13 +48,25 @@ let simCurrentTime = 0;
 let simTimeSlots = 336;
 let simAnimFrameId = null;
 let simIsPlaying = false;
-let simLayerVisibility = { dots: true, lines: false, heatmap: false, handovers: false };
+let simLayerVisibility = { dots: true, lines: true, heatmap: false, handovers: true };
 let simStationIdMap = null;    // {hex_to_numeric: {}, numeric_to_hex: {}}
 let simSelectedStationHexId = null;  // currently selected station hex id in sim mode
 let simSelectedStationCoords = null; // [lng, lat] of selected station
 let userTrajectoryLayer = null;
 let userTrajectoryMarkers = [];
 let currentUserStats = null;
+let simPlaybackSpeed = 1;  // 0.5x, 1x, 2x, 4x
+let _dashOffset = 0;  // animated dash offset counter
+let _dashAnimFrame = null;
+
+// APP category emoji mapping
+const APP_CAT_EMOJI = {
+    'Social Networking': '💬', 'Games': '🎮', 'Entertainment': '🎬', 'Music': '🎵',
+    'Shopping': '🛒', 'Navigation': '🗺️', 'News': '📰', 'Finance': '💳',
+    'Photo & Video': '📸', 'Education': '📚', 'Health & Fitness': '💪', 'Travel': '✈️',
+    'Sports': '⚽', 'Weather': '🌤️', 'Utilities': '⚙️', 'Business': '💼',
+    'Lifestyle': '🏠', 'Books': '📖', 'References': '🔍'
+};
 
 // ==========================================
 // 3. API Logic
@@ -1726,6 +1738,32 @@ function initSimulationLayers(map) {
         map.setLayoutProperty('stations-heatmap', 'visibility', 'none');
     }
 
+    // Station pulse ring for high-load stations (>30 users)
+    if (!map.getLayer('sim-station-pulse')) {
+        map.addLayer({
+            id: 'sim-station-pulse',
+            type: 'circle',
+            source: 'sim-station-stats',
+            filter: ['>', ['get', 'users'], 30],
+            paint: {
+                'circle-radius': [
+                    'interpolate', ['linear'], ['get', 'users'],
+                    30, 18, 60, 30, 100, 40
+                ],
+                'circle-color': 'transparent',
+                'circle-stroke-width': 2,
+                'circle-stroke-color': '#d63031',
+                'circle-stroke-opacity': [
+                    'interpolate', ['linear'], ['get', 'users'],
+                    30, 0.3, 60, 0.5, 100, 0.8
+                ]
+            }
+        });
+    }
+
+    // Start dash flow animation for connection lines
+    startDashAnimation(map);
+
     // --- Handover arcs source ---
     if (!map.getSource('sim-handovers')) {
         map.addSource('sim-handovers', {
@@ -1744,8 +1782,8 @@ function initSimulationLayers(map) {
                 'line-opacity': 0.7,
                 'line-dasharray': [3, 2]
             },
-            layout: { 'visibility': 'none' },
-            minzoom: 12
+            layout: { 'visibility': 'visible' },
+            minzoom: 10
         });
     }
 
@@ -1828,9 +1866,9 @@ function initSimulationLayers(map) {
                 ],
                 'icon-allow-overlap': true,
                 'icon-ignore-placement': true,
-                // Show role label at higher zoom
-                'text-field': ['step', ['zoom'], '', 14, ['get', 'role']],
-                'text-size': 9,
+                // Show app emoji at zoom 13+, add role at zoom 15+
+                'text-field': ['step', ['zoom'], '', 13, ['get', 'app_emoji'], 15, ['concat', ['get', 'app_emoji'], ' ', ['get', 'role']]],
+                'text-size': ['step', ['zoom'], 0, 13, 12, 15, 10],
                 'text-offset': [0, 1.2],
                 'text-allow-overlap': false,
                 'text-optional': true
@@ -1870,10 +1908,11 @@ function initSimulationLayers(map) {
                 'heatmap-color': [
                     'interpolate', ['linear'], ['heatmap-density'],
                     0, 'rgba(0,0,0,0)',
-                    0.15, '#2c3e50',
-                    0.3, '#8e44ad',
-                    0.5, '#e74c3c',
-                    0.7, '#f39c12',
+                    0.1, 'rgba(10,20,60,0.4)',
+                    0.25, '#0984e3',
+                    0.45, '#00cec9',
+                    0.65, '#fdcb6e',
+                    0.85, '#e17055',
                     1, '#ffffff'
                 ],
                 'heatmap-radius': [
@@ -1908,25 +1947,29 @@ function initSimulationLayers(map) {
                 ],
                 'line-width': [
                     'interpolate', ['linear'], ['zoom'],
-                    9, 0.5,
-                    13, 1.5,
-                    16, 3
+                    9, 0.3,
+                    13, 1,
+                    16, 2
                 ],
                 'line-opacity': [
                     'interpolate', ['linear'], ['zoom'],
-                    9, 0.1,
-                    13, 0.4,
-                    16, 0.7
+                    9, 0.15,
+                    12, 0.45,
+                    16, 0.75
                 ]
             },
-            layout: { 'visibility': 'none' },
-            minzoom: 11
+            layout: {
+                'visibility': 'visible',
+                'line-cap': 'round',
+                'line-join': 'round'
+            },
+            minzoom: 9
         });
     }
 }
 
 function cleanupSimulationLayers(map) {
-    const layers = ['sim-users-dots', 'sim-users-heatmap', 'sim-lines-layer', 'sim-station-overlay', 'sim-handover-arcs', 'sim-handover-dots'];
+    const layers = ['sim-users-dots', 'sim-users-heatmap', 'sim-lines-layer', 'sim-station-overlay', 'sim-handover-arcs', 'sim-handover-dots', 'sim-station-pulse'];
     layers.forEach(id => {
         if (map.getLayer(id)) map.removeLayer(id);
     });
@@ -1934,6 +1977,13 @@ function cleanupSimulationLayers(map) {
     if (map.getSource('sim-lines')) map.removeSource('sim-lines');
     if (map.getSource('sim-station-stats')) map.removeSource('sim-station-stats');
     if (map.getSource('sim-handovers')) map.removeSource('sim-handovers');
+
+    // Stop dash animation
+    if (_dashAnimFrame) { cancelAnimationFrame(_dashAnimFrame); _dashAnimFrame = null; }
+
+    // Remove stats dashboard
+    const dash = document.getElementById('sim-stats-dashboard');
+    if (dash) dash.remove();
 
     // Restore original station layers
     if (map.getLayer('stations-3d-pillars')) {
@@ -1965,8 +2015,14 @@ function setupSimUserPopup(map) {
         html += `<div style="color:#888; margin-bottom:2px;">${moveIcon} ${p.movement || 'unknown'}</div>`;
         html += `<div>Signal: <span style="color:${signalColor}; font-weight:bold;">${p.signal} dBm</span> (${signalLabel})</div>`;
         html += `<div>Traffic: <span style="color:#00cec9;">${Number(p.traffic).toFixed(2)} MB</span></div>`;
-        if (p.app_name) html += `<div>App: <span style="color:#fdcb6e;">${p.app_name}</span> <span style="color:#888; font-size:10px;">(${p.app_category})</span></div>`;
-        else if (p.app_category) html += `<div>App: <span style="color:#fdcb6e;">${p.app_category}</span></div>`;
+        if (p.app_name) {
+            const appEmoji = APP_CAT_EMOJI[p.app_category] || '📱';
+            html += `<div>${appEmoji} <span style="color:#fdcb6e;">${p.app_name}</span> <span style="color:#888; font-size:10px;">(${p.app_category})</span></div>`;
+        }
+        else if (p.app_category) {
+            const appEmoji = APP_CAT_EMOJI[p.app_category] || '📱';
+            html += `<div>${appEmoji} <span style="color:#fdcb6e;">${p.app_category}</span></div>`;
+        }
         if (p.handover === 1 || p.handover === '1') html += `<div style="color:#a29bfe; margin-top:3px;">🔄 Handover occurred</div>`;
         html += `</div>`;
 
@@ -1982,8 +2038,8 @@ function setupSimUserPopup(map) {
 }
 
 function prefetchAdjacentSnapshots(currentIndex) {
-    // Prefetch next 2 snapshots in background for smoother playback
-    const toFetch = [currentIndex + 1, currentIndex + 2].filter(i => i < simTimeSlots && !simSnapshotCache[i]);
+    // Prefetch next 5 snapshots in background for smoother playback
+    const toFetch = [1, 2, 3, 4, 5].map(d => currentIndex + d).filter(i => i < simTimeSlots && !simSnapshotCache[i]);
     toFetch.forEach(i => {
         fetchSimulationSnapshot(i).then(data => {
             if (data && !data.error && !simSnapshotCache[i]) {
@@ -2004,10 +2060,10 @@ async function updateSimulationSnapshot(map, timeIndex) {
             console.error('[Sim] Snapshot error:', data?.error);
             return;
         }
-        // Cache (keep max 20 snapshots)
+        // Cache (keep max 50 snapshots)
         simSnapshotCache[timeIndex] = data;
         const keys = Object.keys(simSnapshotCache);
-        if (keys.length > 20) {
+        if (keys.length > 50) {
             delete simSnapshotCache[keys[0]];
         }
         // Prefetch adjacent snapshots in background
@@ -2026,10 +2082,13 @@ async function updateSimulationSnapshot(map, timeIndex) {
         const userId = u[6] || '', movement = u[7] || '', appCat = u[8] || '';
         const role = u[9] || '', appName = u[10] || '';
 
+        // Build GeoJSON properties - include app_emoji for label
+        const appEmoji = APP_CAT_EMOJI[appCat] || '';
+
         pointFeatures.push({
             type: 'Feature',
             geometry: { type: 'Point', coordinates: [lng, lat] },
-            properties: { signal, traffic, base_id: baseId, handover, user_id: userId, movement, app_category: appCat, role, app_name: appName }
+            properties: { signal, traffic, base_id: baseId, handover, user_id: userId, movement, app_category: appCat, role, app_name: appName, app_emoji: appEmoji }
         });
 
         // Build connection line if station loc is known
@@ -2079,6 +2138,7 @@ async function updateSimulationSnapshot(map, timeIndex) {
     if (map.getSource('sim-users')) map.getSource('sim-users').setData(usersGeo);
     if (map.getSource('sim-lines')) map.getSource('sim-lines').setData(linesGeo);
     if (map.getSource('sim-station-stats')) map.getSource('sim-station-stats').setData(stationStatsGeo);
+    console.log(`[Sim] t=${timeIndex}: ${pointFeatures.length} users, ${lineFeatures.length} lines, ${stationOverlayFeatures.length} stations`);
 
     // Build handover arc features
     const handoverArcFeatures = [];
@@ -2131,6 +2191,9 @@ async function updateSimulationSnapshot(map, timeIndex) {
     if (simSelectedStationHexId) {
         updateSimStationPanel();
     }
+
+    // Update live metrics dashboard
+    updateStatsDashboard(data);
 }
 
 /**
@@ -2203,6 +2266,10 @@ function setupSimLayerToggles(map) {
     toggleLayer(linesBtn, 'sim-lines-layer', 'lines');
     toggleLayer(heatmapBtn, 'sim-users-heatmap', 'heatmap');
     toggleLayer(handoverBtn, ['sim-handover-arcs', 'sim-handover-dots'], 'handovers');
+
+    // Set initial button active states to match default visibility
+    if (linesBtn) linesBtn.classList.add('active');
+    if (handoverBtn) handoverBtn.classList.add('active');
 }
 
 function setupSimTimeline(map) {
@@ -2247,7 +2314,9 @@ function setupSimTimeline(map) {
                 slider.value = val;
                 await updateSimulationSnapshot(map, val);
                 if (simIsPlaying && isSimMode) {
-                    simAnimFrameId = setTimeout(simPlay, 300);
+                    // Speed-based interval: 0.5x=600ms, 1x=300ms, 2x=150ms, 4x=75ms
+                    const interval = Math.round(300 / simPlaybackSpeed);
+                    simAnimFrameId = setTimeout(simPlay, interval);
                 }
             };
             simPlay();
@@ -2255,6 +2324,102 @@ function setupSimTimeline(map) {
             if (simAnimFrameId) { clearTimeout(simAnimFrameId); simAnimFrameId = null; }
         }
     };
+
+    // Create speed control button
+    createSpeedControl();
+    // Create real-time stats dashboard
+    createStatsDashboard();
+}
+
+// ==========================================
+// Dash Flow Animation for Connection Lines
+// ==========================================
+function startDashAnimation(map) {
+    // No-op: dash animation removed for compatibility.
+    // Lines use solid styling with round caps for clean appearance.
+}
+
+// ==========================================
+// Playback Speed Control
+// ==========================================
+function createSpeedControl() {
+    const existing = document.getElementById('sim-speed-btn');
+    if (existing) return;
+    const controlsInner = document.querySelector('.sim-controls-inner');
+    if (!controlsInner) return;
+
+    const speedBtn = document.createElement('button');
+    speedBtn.id = 'sim-speed-btn';
+    speedBtn.className = 'sim-layer-btn active';
+    speedBtn.textContent = '1x';
+    speedBtn.title = 'Playback speed';
+    speedBtn.style.minWidth = '40px';
+    speedBtn.style.fontWeight = 'bold';
+
+    const speeds = [0.5, 1, 2, 4];
+    let speedIdx = 1; // default 1x
+    speedBtn.onclick = () => {
+        speedIdx = (speedIdx + 1) % speeds.length;
+        simPlaybackSpeed = speeds[speedIdx];
+        speedBtn.textContent = `${simPlaybackSpeed}x`;
+    };
+
+    // Insert before the time info div
+    const timeInfo = controlsInner.querySelector('.sim-time-info');
+    if (timeInfo) controlsInner.insertBefore(speedBtn, timeInfo);
+    else controlsInner.appendChild(speedBtn);
+}
+
+// ==========================================
+// Real-time Stats Dashboard (bottom-right)
+// ==========================================
+function createStatsDashboard() {
+    let dash = document.getElementById('sim-stats-dashboard');
+    if (dash) return;
+
+    dash = document.createElement('div');
+    dash.id = 'sim-stats-dashboard';
+    dash.innerHTML = `
+        <div class="dash-title">LIVE METRICS</div>
+        <div class="dash-grid">
+            <div class="dash-item">
+                <div class="dash-value" id="dash-users">0</div>
+                <div class="dash-label">USERS</div>
+            </div>
+            <div class="dash-item">
+                <div class="dash-value" id="dash-traffic" style="color:#00cec9;">0</div>
+                <div class="dash-label">TRAFFIC MB</div>
+            </div>
+            <div class="dash-item">
+                <div class="dash-value" id="dash-handovers" style="color:#a29bfe;">0</div>
+                <div class="dash-label">HANDOVERS</div>
+            </div>
+            <div class="dash-item">
+                <div class="dash-value" id="dash-stations" style="color:#fdcb6e;">0</div>
+                <div class="dash-label">ACTIVE STN</div>
+            </div>
+        </div>
+    `;
+    document.querySelector('.main-content').appendChild(dash);
+}
+
+function updateStatsDashboard(data) {
+    const d = document.getElementById('sim-stats-dashboard');
+    if (!d) return;
+    d.style.display = 'block';
+    const el = (id) => document.getElementById(id);
+    if (el('dash-users')) el('dash-users').textContent = (data.total_users || 0).toLocaleString();
+    if (el('dash-handovers')) el('dash-handovers').textContent = (data.handover_count || 0).toLocaleString();
+    // Calculate total traffic and active stations from station_stats
+    let totalTraffic = 0, activeStations = 0;
+    if (data.station_stats) {
+        for (const st of Object.values(data.station_stats)) {
+            totalTraffic += st.traffic || 0;
+            if (st.users > 0) activeStations++;
+        }
+    }
+    if (el('dash-traffic')) el('dash-traffic').textContent = totalTraffic > 1000 ? (totalTraffic / 1000).toFixed(1) + 'K' : Math.round(totalTraffic);
+    if (el('dash-stations')) el('dash-stations').textContent = activeStations;
 }
 
 // ==========================================

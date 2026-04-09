@@ -162,6 +162,13 @@ __pycache__/
 - Phase 2: 用户小人图标（SDF 像素绘制，信号着色）+ 职业标签
 - Phase 2: 用户点击弹窗（职业、运动状态、APP名称+类别、Handover状态）
 - Phase 2: 快照预取缓存 + 连接线动态线宽
+- Phase 2: 后端 Gzip 压缩（API 响应 2.4MB→357KB，86%压缩率）
+- Phase 2: APP 类别 emoji 标识（19 类别映射，弹窗+地图标签）
+- Phase 2: Lines 图层渲染修复（minzoom/visibility/opacity 三重问题）
+- Phase 2: 实时统计仪表盘（用户数/流量/Handover/基站数）
+- Phase 2: 播放速度控制（0.5x/1x/2x/4x）
+- Phase 2: 热力图配色升级 + 预取缓存扩大（2→5，容量 20→50）
+- Phase 2: Electron 生产环境关闭 DevTools
 - C/S 架构部署验证通过（SSH 隧道 + Electron）
 
 ⚠️ **待处理**:

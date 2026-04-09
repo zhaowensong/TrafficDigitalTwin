@@ -2,7 +2,9 @@ import os
 import json
 import numpy as np
 import math
-from flask import Flask, jsonify, send_from_directory, request
+import gzip
+import io
+from flask import Flask, jsonify, send_from_directory, request, make_response
 from flask_cors import CORS
 
 from data_manager import DataManager
@@ -23,6 +25,38 @@ except Exception as e:
 # ==========================================
 app = Flask(__name__, static_folder='.')
 CORS(app)
+
+# ==========================================
+# Gzip Compression Middleware
+# ==========================================
+@app.after_request
+def compress_response(response):
+    """Gzip compress responses > 1KB when client supports it."""
+    if (
+        response.status_code < 200 or response.status_code >= 300
+        or response.direct_passthrough
+        or 'Content-Encoding' in response.headers
+        or 'gzip' not in request.headers.get('Accept-Encoding', '')
+    ):
+        return response
+
+    data = response.get_data()
+    if len(data) < 1024:  # Don't compress tiny responses
+        return response
+
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode='wb', compresslevel=6) as f:
+        f.write(data)
+    compressed = buf.getvalue()
+
+    # Only use compressed version if it's actually smaller
+    if len(compressed) < len(data):
+        response.set_data(compressed)
+        response.headers['Content-Encoding'] = 'gzip'
+        response.headers['Content-Length'] = len(compressed)
+        response.headers['Vary'] = 'Accept-Encoding'
+
+    return response
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, 'data'))

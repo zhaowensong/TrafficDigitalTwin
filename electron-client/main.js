@@ -23,8 +23,8 @@ function createWindow() {
     // 加载本地 HTML 文件
     mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
 
-    // 开发工具（开发时启用）
-    mainWindow.webContents.openDevTools();
+    // 开发工具（生产环境关闭）
+    // mainWindow.webContents.openDevTools();
 
     // 窗口加载完成后显示
     mainWindow.once('ready-to-show', () => {
