@@ -48,7 +48,7 @@ let simCurrentTime = 0;
 let simTimeSlots = 336;
 let simAnimFrameId = null;
 let simIsPlaying = false;
-let simLayerVisibility = { dots: true, lines: false, heatmap: false };
+let simLayerVisibility = { dots: true, lines: false, heatmap: false, handovers: false };
 let simStationIdMap = null;    // {hex_to_numeric: {}, numeric_to_hex: {}}
 let simSelectedStationHexId = null;  // currently selected station hex id in sim mode
 let simSelectedStationCoords = null; // [lng, lat] of selected station
@@ -209,31 +209,48 @@ function loadSatellitePatch(lng, lat) {
 // ==========================================
 // 4. Chart Logic (Normal & Prediction)
 // ==========================================
-function renderChart(recordData) {
+function renderChart(recordData, secondaryData = null, options = {}) {
     const ctx = document.getElementById('energyChart').getContext('2d');
     if (chartInstance) chartInstance.destroy();
 
+    const datasets = [
+        { 
+            label: options.label1 || 'Traffic', data: recordData, 
+            borderColor: options.color1 || '#00cec9', backgroundColor: options.bg1 || 'rgba(0, 206, 201, 0.1)', 
+            borderWidth: 1.5, fill: true, pointRadius: 0, tension: 0.3,
+            yAxisID: 'y'
+        },
+        { 
+            label: 'Current', data: [], type: 'scatter', 
+            pointRadius: 6, pointBackgroundColor: '#ffffff', 
+            pointBorderColor: '#e84393', pointBorderWidth: 3,
+            yAxisID: 'y'
+        }
+    ];
+    
+    const scales = { 
+        x: { display: false }, 
+        y: { position: 'left', grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748b', font: {size: 10} } } 
+    };
+
+    // Dual-axis: add secondary dataset (e.g. traffic alongside user counts)
+    if (secondaryData) {
+        datasets.push({
+            label: options.label2 || 'Traffic (MB)', data: secondaryData,
+            borderColor: options.color2 || '#fdcb6e', backgroundColor: 'transparent',
+            borderWidth: 1, fill: false, pointRadius: 0, tension: 0.3, borderDash: [4, 2],
+            yAxisID: 'y2'
+        });
+        scales.y2 = { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: '#fdcb6e', font: {size: 9} } };
+    }
+
     chartInstance = new Chart(ctx, {
         type: 'line',
-        data: { 
-            labels: recordData.map((_, i) => i), 
-            datasets: [
-                { 
-                    label: 'Traffic', data: recordData, 
-                    borderColor: '#00cec9', backgroundColor: 'rgba(0, 206, 201, 0.1)', 
-                    borderWidth: 1.5, fill: true, pointRadius: 0, tension: 0.3 
-                },
-                { 
-                    label: 'Current', data: [], type: 'scatter', 
-                    pointRadius: 6, pointBackgroundColor: '#ffffff', 
-                    pointBorderColor: '#e84393', pointBorderWidth: 3 
-                }
-            ] 
-        },
+        data: { labels: recordData.map((_, i) => i), datasets },
         options: { 
             responsive: true, maintainAspectRatio: false, animation: false,
-            plugins: { legend: { display: false } }, 
-            scales: { x: { display: false }, y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748b', font: {size: 10} } } } 
+            plugins: { legend: { display: !!secondaryData, labels: { color: '#aaa', font: {size: 9}, boxWidth: 12 } } }, 
+            scales
         }
     });
 }
@@ -597,10 +614,15 @@ function setupInteraction(map) {
             // Update station panel with current snapshot
             updateSimStationPanel();
 
-            // Fetch and render time series chart (one-time load, uses hex ID now)
+            // Fetch and render time series chart (dual axis: users + traffic)
             const ts = await fetchStationTimeSeries(id);
             if (ts && ts.user_counts) {
-                renderChart(ts.user_counts);
+                renderChart(ts.user_counts, ts.traffic_totals, {
+                    label1: 'Users', color1: '#0984e3', bg1: 'rgba(9,132,227,0.15)',
+                    label2: 'Traffic (MB)', color2: '#fdcb6e'
+                });
+                // Position cursor at current sim time
+                updateChartCursor(simCurrentTime);
             }
             return;
         }
@@ -1625,6 +1647,7 @@ function setupSimulationMode(map) {
             // Override time slider for simulation (once)
             if (!map._simTimelineSetup) {
                 setupSimTimeline(map);
+                setupSimUserPopup(map);
                 map._simTimelineSetup = true;
             }
 
@@ -1649,6 +1672,7 @@ function setupSimulationMode(map) {
 
             // Remove simulation layers
             cleanupSimulationLayers(map);
+            if (_simPopup) { _simPopup.remove(); _simPopup = null; }
             simSnapshotCache = {};
             simSelectedStationHexId = null;
             simSelectedStationCoords = null;
@@ -1702,7 +1726,30 @@ function initSimulationLayers(map) {
         map.setLayoutProperty('stations-heatmap', 'visibility', 'none');
     }
 
-    // Users points source + layer
+    // --- Handover arcs source ---
+    if (!map.getSource('sim-handovers')) {
+        map.addSource('sim-handovers', {
+            type: 'geojson',
+            data: { type: 'FeatureCollection', features: [] }
+        });
+    }
+    if (!map.getLayer('sim-handover-arcs')) {
+        map.addLayer({
+            id: 'sim-handover-arcs',
+            type: 'line',
+            source: 'sim-handovers',
+            paint: {
+                'line-color': '#a29bfe',
+                'line-width': 2,
+                'line-opacity': 0.7,
+                'line-dasharray': [3, 2]
+            },
+            layout: { 'visibility': 'none' },
+            minzoom: 12
+        });
+    }
+
+    // Users points source (MUST be created before layers that reference it)
     if (!map.getSource('sim-users')) {
         map.addSource('sim-users', {
             type: 'geojson',
@@ -1710,28 +1757,95 @@ function initSimulationLayers(map) {
         });
     }
 
-    // User dots layer
-    if (!map.getLayer('sim-users-dots')) {
+    // Handover user highlight dots (uses sim-users source)
+    if (!map.getLayer('sim-handover-dots')) {
         map.addLayer({
-            id: 'sim-users-dots',
+            id: 'sim-handover-dots',
             type: 'circle',
             source: 'sim-users',
+            filter: ['==', ['get', 'handover'], 1],
             paint: {
                 'circle-radius': [
                     'interpolate', ['linear'], ['zoom'],
-                    9, 1.5,
-                    13, 3,
-                    16, 5
+                    9, 3, 13, 5, 16, 8
                 ],
-                'circle-color': [
+                'circle-color': '#a29bfe',
+                'circle-opacity': 0.9,
+                'circle-stroke-width': 2,
+                'circle-stroke-color': '#ffffff'
+            },
+            minzoom: 11
+        });
+    }
+
+    // User dots layer - person icons via symbol layer
+    if (!map.getLayer('sim-users-dots')) {
+        // Generate person icon as raw ImageData for Mapbox (SDF compatible)
+        if (!map.hasImage('person-icon')) {
+            const sz = 40;
+            const data = new Uint8ClampedArray(sz * sz * 4);
+            // Helper to set pixel alpha (SDF: white icon on transparent bg)
+            function setPixel(x, y, a) {
+                if (x < 0 || x >= sz || y < 0 || y >= sz) return;
+                const idx = (y * sz + x) * 4;
+                data[idx] = 255; data[idx+1] = 255; data[idx+2] = 255; data[idx+3] = a;
+            }
+            function fillCircle(cx, cy, r) {
+                for (let dy = -r; dy <= r; dy++) {
+                    for (let dx = -r; dx <= r; dx++) {
+                        if (dx*dx + dy*dy <= r*r) setPixel(Math.round(cx+dx), Math.round(cy+dy), 255);
+                    }
+                }
+            }
+            function drawLine(x0, y0, x1, y1, w) {
+                const steps = Math.max(Math.abs(x1-x0), Math.abs(y1-y0)) * 2;
+                for (let i = 0; i <= steps; i++) {
+                    const t = i / steps;
+                    const x = x0 + (x1-x0)*t, y = y0 + (y1-y0)*t;
+                    fillCircle(Math.round(x), Math.round(y), w);
+                }
+            }
+            // Person: head, body, arms, legs
+            fillCircle(sz/2, sz*0.20, sz*0.10);       // head
+            drawLine(sz/2, sz*0.32, sz/2, sz*0.58, 2);  // body
+            drawLine(sz*0.28, sz*0.42, sz*0.72, sz*0.42, 1); // arms
+            drawLine(sz/2, sz*0.58, sz*0.30, sz*0.85, 1);  // left leg
+            drawLine(sz/2, sz*0.58, sz*0.70, sz*0.85, 1);  // right leg
+            map.addImage('person-icon', { width: sz, height: sz, data: data }, { sdf: true });
+        }
+
+        map.addLayer({
+            id: 'sim-users-dots',
+            type: 'symbol',
+            source: 'sim-users',
+            layout: {
+                'icon-image': 'person-icon',
+                'icon-size': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 0.18,
+                    13, 0.4,
+                    16, 0.65
+                ],
+                'icon-allow-overlap': true,
+                'icon-ignore-placement': true,
+                // Show role label at higher zoom
+                'text-field': ['step', ['zoom'], '', 14, ['get', 'role']],
+                'text-size': 9,
+                'text-offset': [0, 1.2],
+                'text-allow-overlap': false,
+                'text-optional': true
+            },
+            paint: {
+                'icon-color': [
                     'step', ['get', 'signal'],
-                    '#e74c3c',    // default: red (< -100)
-                    -100, '#f39c12', // yellow (-100 to -80)
-                    -80, '#2ecc71'   // green (> -80)
+                    '#e74c3c',
+                    -100, '#f39c12',
+                    -80, '#2ecc71'
                 ],
-                'circle-opacity': 0.75,
-                'circle-stroke-width': 0.5,
-                'circle-stroke-color': 'rgba(255,255,255,0.3)'
+                'icon-opacity': 0.85,
+                'text-color': '#ffffff',
+                'text-halo-color': 'rgba(0,0,0,0.7)',
+                'text-halo-width': 1
             }
         });
     }
@@ -1792,12 +1906,17 @@ function initSimulationLayers(map) {
                     -100, '#f39c12',
                     -80, '#2ecc71'
                 ],
-                'line-width': 0.8,
+                'line-width': [
+                    'interpolate', ['linear'], ['zoom'],
+                    9, 0.5,
+                    13, 1.5,
+                    16, 3
+                ],
                 'line-opacity': [
                     'interpolate', ['linear'], ['zoom'],
-                    9, 0.05,
-                    13, 0.25,
-                    16, 0.5
+                    9, 0.1,
+                    13, 0.4,
+                    16, 0.7
                 ]
             },
             layout: { 'visibility': 'none' },
@@ -1807,13 +1926,14 @@ function initSimulationLayers(map) {
 }
 
 function cleanupSimulationLayers(map) {
-    const layers = ['sim-users-dots', 'sim-users-heatmap', 'sim-lines-layer', 'sim-station-overlay'];
+    const layers = ['sim-users-dots', 'sim-users-heatmap', 'sim-lines-layer', 'sim-station-overlay', 'sim-handover-arcs', 'sim-handover-dots'];
     layers.forEach(id => {
         if (map.getLayer(id)) map.removeLayer(id);
     });
     if (map.getSource('sim-users')) map.removeSource('sim-users');
     if (map.getSource('sim-lines')) map.removeSource('sim-lines');
     if (map.getSource('sim-station-stats')) map.removeSource('sim-station-stats');
+    if (map.getSource('sim-handovers')) map.removeSource('sim-handovers');
 
     // Restore original station layers
     if (map.getLayer('stations-3d-pillars')) {
@@ -1822,6 +1942,55 @@ function cleanupSimulationLayers(map) {
     if (map.getLayer('stations-heatmap')) {
         map.setLayoutProperty('stations-heatmap', 'visibility', 'visible');
     }
+}
+
+let _simPopup = null;
+
+function setupSimUserPopup(map) {
+    // Click on user dot in sim mode => show info popup
+    map.on('click', 'sim-users-dots', (e) => {
+        if (!isSimMode || !e.features || !e.features.length) return;
+        e.originalEvent.stopPropagation();
+        const p = e.features[0].properties;
+        const coords = e.features[0].geometry.coordinates.slice();
+
+        const signalColor = p.signal > -80 ? '#2ecc71' : p.signal > -100 ? '#f39c12' : '#e74c3c';
+        const signalLabel = p.signal > -80 ? 'Good' : p.signal > -100 ? 'Fair' : 'Poor';
+        const moveIcon = p.movement === 'stationary' || p.movement === 'stay' ? '🏠' : p.movement === 'walking' ? '🚶' : p.movement === 'driving' ? '🚗' : '📍';
+        const roleLabel = p.role ? p.role.replace(/_/g, ' ') : 'unknown';
+
+        let html = `<div style="font-family:'Courier New',monospace; font-size:11px; min-width:180px;">`;
+        html += `<div style="font-weight:bold; color:#a29bfe; border-bottom:1px solid #444; padding-bottom:3px; margin-bottom:4px;">👤 ${p.user_id}</div>`;
+        html += `<div style="color:#fdcb6e; margin-bottom:2px;">💼 ${roleLabel}</div>`;
+        html += `<div style="color:#888; margin-bottom:2px;">${moveIcon} ${p.movement || 'unknown'}</div>`;
+        html += `<div>Signal: <span style="color:${signalColor}; font-weight:bold;">${p.signal} dBm</span> (${signalLabel})</div>`;
+        html += `<div>Traffic: <span style="color:#00cec9;">${Number(p.traffic).toFixed(2)} MB</span></div>`;
+        if (p.app_name) html += `<div>App: <span style="color:#fdcb6e;">${p.app_name}</span> <span style="color:#888; font-size:10px;">(${p.app_category})</span></div>`;
+        else if (p.app_category) html += `<div>App: <span style="color:#fdcb6e;">${p.app_category}</span></div>`;
+        if (p.handover === 1 || p.handover === '1') html += `<div style="color:#a29bfe; margin-top:3px;">🔄 Handover occurred</div>`;
+        html += `</div>`;
+
+        if (_simPopup) _simPopup.remove();
+        _simPopup = new mapboxgl.Popup({ closeButton: true, closeOnClick: true, className: 'cyber-popup', maxWidth: '220px' })
+            .setLngLat(coords)
+            .setHTML(html)
+            .addTo(map);
+    });
+
+    map.on('mouseenter', 'sim-users-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'sim-users-dots', () => { if (isSimMode) map.getCanvas().style.cursor = ''; });
+}
+
+function prefetchAdjacentSnapshots(currentIndex) {
+    // Prefetch next 2 snapshots in background for smoother playback
+    const toFetch = [currentIndex + 1, currentIndex + 2].filter(i => i < simTimeSlots && !simSnapshotCache[i]);
+    toFetch.forEach(i => {
+        fetchSimulationSnapshot(i).then(data => {
+            if (data && !data.error && !simSnapshotCache[i]) {
+                simSnapshotCache[i] = data;
+            }
+        }).catch(() => {});
+    });
 }
 
 let _simDebounceTimer = null;
@@ -1835,12 +2004,14 @@ async function updateSimulationSnapshot(map, timeIndex) {
             console.error('[Sim] Snapshot error:', data?.error);
             return;
         }
-        // Cache (keep max 10 snapshots)
+        // Cache (keep max 20 snapshots)
         simSnapshotCache[timeIndex] = data;
         const keys = Object.keys(simSnapshotCache);
-        if (keys.length > 10) {
+        if (keys.length > 20) {
             delete simSnapshotCache[keys[0]];
         }
+        // Prefetch adjacent snapshots in background
+        prefetchAdjacentSnapshots(timeIndex);
     }
 
     simCurrentTime = timeIndex;
@@ -1850,13 +2021,15 @@ async function updateSimulationSnapshot(map, timeIndex) {
     const lineFeatures = [];
 
     for (const u of data.users) {
-        // u = [lng, lat, base_id, signal_dbm, traffic_mb]
-        const lng = u[0], lat = u[1], baseId = u[2], signal = u[3], traffic = u[4];
+        // u = [lng, lat, base_id, signal_dbm, traffic_mb, handover_flag, user_id, movement, app_category, role, app_name]
+        const lng = u[0], lat = u[1], baseId = u[2], signal = u[3], traffic = u[4], handover = u[5] || 0;
+        const userId = u[6] || '', movement = u[7] || '', appCat = u[8] || '';
+        const role = u[9] || '', appName = u[10] || '';
 
         pointFeatures.push({
             type: 'Feature',
             geometry: { type: 'Point', coordinates: [lng, lat] },
-            properties: { signal, traffic, base_id: baseId }
+            properties: { signal, traffic, base_id: baseId, handover, user_id: userId, movement, app_category: appCat, role, app_name: appName }
         });
 
         // Build connection line if station loc is known
@@ -1907,6 +2080,28 @@ async function updateSimulationSnapshot(map, timeIndex) {
     if (map.getSource('sim-lines')) map.getSource('sim-lines').setData(linesGeo);
     if (map.getSource('sim-station-stats')) map.getSource('sim-station-stats').setData(stationStatsGeo);
 
+    // Build handover arc features
+    const handoverArcFeatures = [];
+    if (data.handovers) {
+        for (const ho of data.handovers) {
+            // ho = [user_lng, user_lat, old_stn_lng, old_stn_lat, new_stn_lng, new_stn_lat]
+            handoverArcFeatures.push({
+                type: 'Feature',
+                geometry: {
+                    type: 'LineString',
+                    coordinates: [
+                        [ho[2], ho[3]],  // old station
+                        [ho[0], ho[1]],  // user (midpoint)
+                        [ho[4], ho[5]]   // new station
+                    ]
+                },
+                properties: {}
+            });
+        }
+    }
+    const handoverGeo = { type: 'FeatureCollection', features: handoverArcFeatures };
+    if (map.getSource('sim-handovers')) map.getSource('sim-handovers').setData(handoverGeo);
+
     // Update UI
     const timeDisplay = document.getElementById('sim-time-display');
     const userCount = document.getElementById('sim-user-count');
@@ -1918,7 +2113,8 @@ async function updateSimulationSnapshot(map, timeIndex) {
         timeDisplay.textContent = `Day ${day} ${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
     }
     if (userCount) {
-        userCount.textContent = `${data.total_users.toLocaleString()} users`;
+        const hoCount = data.handover_count || 0;
+        userCount.textContent = `${data.total_users.toLocaleString()} users` + (hoCount > 0 ? ` | ${hoCount} handovers` : '');
     }
 
     // Also update the main time display
@@ -1966,9 +2162,13 @@ function updateSimStationPanel() {
     html += `<hr style="border:0; border-top:1px solid #444; margin:5px 0;">`;
     html += `<p style="font-size:11px; color:#888; margin-bottom:6px;">⏱ ${timeLabel}</p>`;
     if (stStats) {
+        // PRB utilization estimate: ~2 PRBs per user, 100 total PRBs
+        const prbUtil = Math.min(100, Math.round((stStats.users * 2 / 100) * 100));
+        const prbColor = prbUtil > 80 ? '#d63031' : prbUtil > 50 ? '#fdcb6e' : '#00b894';
         html += `<p><strong style="color:#ff6348;">Connected Users:</strong> <span style="color:#fff; font-size:16px; font-weight:bold;">${stStats.users}</span></p>`;
         html += `<p><strong style="color:#ff6348;">Total Traffic:</strong> <span style="color:#fff;">${stStats.traffic.toFixed(1)} MB</span></p>`;
         html += `<p><strong style="color:#ff6348;">Avg Signal:</strong> <span style="color:${stStats.avg_signal > -80 ? '#2ecc71' : stStats.avg_signal > -100 ? '#f39c12' : '#e74c3c'};">${stStats.avg_signal} dBm</span></p>`;
+        html += `<p><strong style="color:#ff6348;">PRB Utilization:</strong> <span style="color:${prbColor}; font-weight:bold;">${prbUtil}%</span></p>`;
         if (stStats.cells && stStats.cells > 1) {
             html += `<p style="font-size:11px; color:#888; margin-top:4px;">📡 ${stStats.cells} cells at this site</p>`;
         }
@@ -1983,21 +2183,26 @@ function setupSimLayerToggles(map) {
     const dotsBtn = document.getElementById('sim-show-dots');
     const linesBtn = document.getElementById('sim-show-lines');
     const heatmapBtn = document.getElementById('sim-show-heatmap');
+    const handoverBtn = document.getElementById('sim-show-handovers');
 
-    function toggleLayer(btn, layerId, key) {
+    function toggleLayer(btn, layerIds, key) {
         if (!btn) return;
         btn.onclick = () => {
             simLayerVisibility[key] = !simLayerVisibility[key];
             btn.classList.toggle('active', simLayerVisibility[key]);
-            if (map.getLayer(layerId)) {
-                map.setLayoutProperty(layerId, 'visibility', simLayerVisibility[key] ? 'visible' : 'none');
-            }
+            const ids = Array.isArray(layerIds) ? layerIds : [layerIds];
+            ids.forEach(id => {
+                if (map.getLayer(id)) {
+                    map.setLayoutProperty(id, 'visibility', simLayerVisibility[key] ? 'visible' : 'none');
+                }
+            });
         };
     }
 
     toggleLayer(dotsBtn, 'sim-users-dots', 'dots');
     toggleLayer(linesBtn, 'sim-lines-layer', 'lines');
     toggleLayer(heatmapBtn, 'sim-users-heatmap', 'heatmap');
+    toggleLayer(handoverBtn, ['sim-handover-arcs', 'sim-handover-dots'], 'handovers');
 }
 
 function setupSimTimeline(map) {

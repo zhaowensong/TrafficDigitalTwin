@@ -504,6 +504,7 @@ class DataManager:
             return {"error": f"time_index must be 0-{self.trajectory_time_slots - 1}"}
 
         users_data = []
+        handovers = []  # Handover events: [user_lng, user_lat, old_station_loc, new_station_loc]
         # 按地图基站 (map hex) 聚合统计，同一基站 200m 内多 cell 汇总
         site_agg = defaultdict(lambda: {"users": 0, "traffic": 0.0, "signal_sum": 0.0, "cells": set()})
 
@@ -525,7 +526,33 @@ class DataManager:
                 if lng < bbox[0] or lng > bbox[2] or lat < bbox[1] or lat > bbox[3]:
                     continue
 
-            users_data.append([round(lng, 6), round(lat, 6), base_id, round(signal, 1), round(traffic, 2)])
+            # Handover detection: compare base_id with previous time slot
+            ho_flag = 0
+            if time_index > 0 and time_index < len(records):
+                prev_rec = records[time_index - 1]
+                if len(prev_rec) >= 4 and prev_rec[3] != base_id:
+                    ho_flag = 1
+                    # Get map hex IDs for old and new stations
+                    old_map_hex = self.numeric_to_map_hex.get(prev_rec[3])
+                    new_map_hex = self.numeric_to_map_hex.get(base_id)
+                    old_loc = self.base_id_to_loc.get(prev_rec[3])
+                    new_loc = self.base_id_to_loc.get(base_id)
+                    if old_loc and new_loc:
+                        handovers.append([
+                            round(lng, 6), round(lat, 6),
+                            round(old_loc[0], 6), round(old_loc[1], 6),
+                            round(new_loc[0], 6), round(new_loc[1], 6)
+                        ])
+
+            # Include movement_state, app info, and role for user popup
+            move_state = rec[6] if len(rec) > 6 and rec[6] else ''
+            app_name = rec[8] if len(rec) > 8 and rec[8] else ''
+            app_cat = rec[9] if len(rec) > 9 and rec[9] else ''
+            role = ''
+            prof = self.user_profiles.get(uid)
+            if prof:
+                role = prof.get('role', '')
+            users_data.append([round(lng, 6), round(lat, 6), base_id, round(signal, 1), round(traffic, 2), ho_flag, uid, move_state, app_cat, role, app_name])
 
             # 按地图基站聚合（200m范围内的同站多 cell 真实汇总）
             map_hex = self.numeric_to_map_hex.get(base_id)
@@ -550,9 +577,11 @@ class DataManager:
             "time_index": time_index,
             "total_users": len(users_data),
             "time_slots": self.trajectory_time_slots,
-            "schema": ["lng", "lat", "base_id", "signal_dbm", "traffic_mb"],
+            "schema": ["lng", "lat", "base_id", "signal_dbm", "traffic_mb", "handover", "user_id", "movement", "app_category", "role", "app_name"],
             "users": users_data,
             "station_stats": station_stats,
+            "handovers": handovers,
+            "handover_count": len(handovers),
         }
 
     def get_station_locs_by_numeric_id(self):

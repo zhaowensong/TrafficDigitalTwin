@@ -242,6 +242,7 @@
                 <button id="sim-show-dots" class="sim-layer-btn active" title="User Dots">🔵 Users</button>
                 <button id="sim-show-lines" class="sim-layer-btn" title="Connection Lines">↔️ Lines</button>
                 <button id="sim-show-heatmap" class="sim-layer-btn" title="Density Heatmap">🌡️ Heatmap</button>
+                <button id="sim-show-handovers" class="sim-layer-btn" title="Handover Events">🔄 Handovers</button>
             </div>
             <div class="sim-time-info">
                 <span id="sim-time-display" class="sim-time-text">Day 1 00:00</span>
@@ -252,10 +253,10 @@
 
     <!-- Simulation Legend -->
     <div id="sim-legend" class="sim-legend" style="display: none;">
-        <div class="legend-title">Signal Quality (Users)</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#2ecc71;"></span> &gt; -80 dBm (Good)</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#f39c12;"></span> -80 ~ -100 dBm (Fair)</div>
-        <div class="legend-item"><span class="legend-dot" style="background:#e74c3c;"></span> &lt; -100 dBm (Poor)</div>
+        <div class="legend-title">Signal Quality (Users 👤)</div>
+        <div class="legend-item"><span style="color:#2ecc71; font-size:14px;">👤</span> &gt; -80 dBm (Good)</div>
+        <div class="legend-item"><span style="color:#f39c12; font-size:14px;">👤</span> -80 ~ -100 dBm (Fair)</div>
+        <div class="legend-item"><span style="color:#e74c3c; font-size:14px;">👤</span> &lt; -100 dBm (Poor)</div>
         <div class="legend-title" style="margin-top:8px;">Station Load (Size &amp; Color)</div>
         <div class="legend-item"><span class="legend-dot" style="background:#0984e3; width:8px; height:8px;"></span> 1-10 users</div>
         <div class="legend-item"><span class="legend-dot" style="background:#00cec9; width:10px; height:10px;"></span> 10-25 users</div>

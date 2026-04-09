@@ -156,10 +156,15 @@ __pycache__/
 - 代码已推送到 GitHub
 - Phase 1: 基站扩展 + 用户数据接入 + APP模型 + DataManager
 - Phase 2: 模拟模式 + 连接可视化 + 密度热力图 + 基站用户数着色
+- Phase 2: Handover 检测与弧线/高亮可视化
+- Phase 2: PRB 资源利用率估算显示
+- Phase 2: 双轴时间序列图（用户数+流量）
+- Phase 2: 用户小人图标（SDF 像素绘制，信号着色）+ 职业标签
+- Phase 2: 用户点击弹窗（职业、运动状态、APP名称+类别、Handover状态）
+- Phase 2: 快照预取缓存 + 连接线动态线宽
 - C/S 架构部署验证通过（SSH 隧道 + Electron）
 
 ⚠️ **待处理**:
-- Phase 2 剩余: Handover动画、流量流向图、性能优化
 - 需要手动上传模型文件 `best_corr_model.pt`
 - 需要手动上传数据文件 `*.npz`
 - 需要配置 Mapbox Token
