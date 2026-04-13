@@ -348,10 +348,10 @@ def get_station_time_series(station_id):
 # Server Startup
 # ==========================================
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 7860))
     print(f"Monitoring Data Directory: {DATA_DIR}")
     if dm.user_data_dir:
         print(f"User Data Directory: {dm.user_data_dir}")
     host = os.environ.get('HOST', '127.0.0.1')
     print(f"Server running on http://{host}:{port}")
-    app.run(host=host, debug=True, port=port)
+    app.run(host=host, debug=False, port=port)
