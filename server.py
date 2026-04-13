@@ -294,6 +294,21 @@ def get_simulation_snapshot():
                 bbox = parts  # [min_lng, min_lat, max_lng, max_lat]
         except ValueError:
             pass
+
+    # 无 bbox 时使用预计算缓存，零计算直接返回 bytes
+    if not bbox:
+        accept_gzip = 'gzip' in request.headers.get('Accept-Encoding', '')
+        data_bytes, encoding = dm.get_snapshot_bytes(t, accept_gzip=accept_gzip)
+        if data_bytes:
+            resp = make_response(data_bytes)
+            resp.headers['Content-Type'] = 'application/json'
+            if encoding == 'gzip':
+                resp.headers['Content-Encoding'] = 'gzip'
+                resp.headers['Vary'] = 'Accept-Encoding'
+            resp.headers['Content-Length'] = len(data_bytes)
+            return resp
+
+    # 有 bbox 或无缓存时回退到实时计算
     result = dm.get_simulation_snapshot(t, bbox=bbox)
     if 'error' in result:
         return jsonify(result), 400

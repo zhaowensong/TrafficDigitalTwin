@@ -2038,9 +2038,15 @@ function setupSimUserPopup(map) {
 }
 
 function prefetchAdjacentSnapshots(currentIndex) {
-    // Prefetch next 5 snapshots in background for smoother playback
-    const toFetch = [1, 2, 3, 4, 5].map(d => currentIndex + d).filter(i => i < simTimeSlots && !simSnapshotCache[i]);
-    toFetch.forEach(i => {
+    // Dynamic prefetch window based on playback speed: 1x->8, 2x->15, 4x->25
+    const prefetchCount = Math.min(25, Math.round(8 * simPlaybackSpeed));
+    const toFetch = [];
+    for (let d = 1; d <= prefetchCount; d++) {
+        const i = currentIndex + d;
+        if (i < simTimeSlots && !simSnapshotCache[i]) toFetch.push(i);
+    }
+    // Limit concurrent fetches to 6
+    toFetch.slice(0, 6).forEach(i => {
         fetchSimulationSnapshot(i).then(data => {
             if (data && !data.error && !simSnapshotCache[i]) {
                 simSnapshotCache[i] = data;
@@ -2060,21 +2066,28 @@ async function updateSimulationSnapshot(map, timeIndex) {
             console.error('[Sim] Snapshot error:', data?.error);
             return;
         }
-        // Cache (keep max 50 snapshots)
+        // Cache (keep max 150 snapshots)
         simSnapshotCache[timeIndex] = data;
         const keys = Object.keys(simSnapshotCache);
-        if (keys.length > 50) {
-            delete simSnapshotCache[keys[0]];
+        if (keys.length > 150) {
+            // Evict oldest entries
+            const sortedKeys = keys.map(Number).sort((a, b) => a - b);
+            for (let i = 0; i < 30; i++) {
+                delete simSnapshotCache[sortedKeys[i]];
+            }
         }
-        // Prefetch adjacent snapshots in background
-        prefetchAdjacentSnapshots(timeIndex);
     }
+    // Always prefetch ahead (even on cache hit)
+    prefetchAdjacentSnapshots(timeIndex);
 
     simCurrentTime = timeIndex;
 
-    // Build user point features
-    const pointFeatures = [];
-    const lineFeatures = [];
+    // Build features - skip disabled layers for performance
+    const buildLines = simLayerVisibility.lines && !!simStationLocs;
+    const buildHeatmap = simLayerVisibility.heatmap;
+    const pointFeatures = new Array(data.users.length);
+    const lineFeatures = buildLines ? [] : [];
+    let pi = 0;
 
     for (const u of data.users) {
         // u = [lng, lat, base_id, signal_dbm, traffic_mb, handover_flag, user_id, movement, app_category, role, app_name]
@@ -2082,17 +2095,16 @@ async function updateSimulationSnapshot(map, timeIndex) {
         const userId = u[6] || '', movement = u[7] || '', appCat = u[8] || '';
         const role = u[9] || '', appName = u[10] || '';
 
-        // Build GeoJSON properties - include app_emoji for label
         const appEmoji = APP_CAT_EMOJI[appCat] || '';
 
-        pointFeatures.push({
+        pointFeatures[pi++] = {
             type: 'Feature',
             geometry: { type: 'Point', coordinates: [lng, lat] },
             properties: { signal, traffic, base_id: baseId, handover, user_id: userId, movement, app_category: appCat, role, app_name: appName, app_emoji: appEmoji }
-        });
+        };
 
-        // Build connection line if station loc is known
-        if (simStationLocs) {
+        // Only build connection lines when layer is visible
+        if (buildLines) {
             const stationLoc = simStationLocs[String(baseId)];
             if (stationLoc) {
                 lineFeatures.push({
@@ -2140,9 +2152,9 @@ async function updateSimulationSnapshot(map, timeIndex) {
     if (map.getSource('sim-station-stats')) map.getSource('sim-station-stats').setData(stationStatsGeo);
     console.log(`[Sim] t=${timeIndex}: ${pointFeatures.length} users, ${lineFeatures.length} lines, ${stationOverlayFeatures.length} stations`);
 
-    // Build handover arc features
+    // Build handover arc features (skip if layer hidden)
     const handoverArcFeatures = [];
-    if (data.handovers) {
+    if (data.handovers && simLayerVisibility.handovers) {
         for (const ho of data.handovers) {
             // ho = [user_lng, user_lat, old_stn_lng, old_stn_lat, new_stn_lng, new_stn_lat]
             handoverArcFeatures.push({

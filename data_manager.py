@@ -480,9 +480,117 @@ class DataManager:
         print(f"[DataManager] {multi} stations have multi-cells (avg {avg_cells:.1f} cells/station), {len(self.base_id_to_loc) - mapped_count} cells unmapped (>200m)")
         print(f"[DataManager] Built in {elapsed:.1f}s, trajectory time slots: {self.trajectory_time_slots}")
 
+        # 预计算全部快照并缓存为 JSON bytes + Gzip bytes
+        self._precompute_all_snapshots()
+
+    def _precompute_all_snapshots(self):
+        """预计算全部时间片快照，缓存为 JSON bytes 和 Gzip bytes，实现 O(1) 响应。"""
+        import gzip as _gzip
+        if not self.user_trajectories or self.trajectory_time_slots == 0:
+            self._snapshot_cache_json = {}
+            self._snapshot_cache_gzip = {}
+            return
+
+        t0 = time.time()
+        self._snapshot_cache_json = {}  # {time_index: json_bytes}
+        self._snapshot_cache_gzip = {}  # {time_index: gzip_bytes}
+        schema = ["lng", "lat", "base_id", "signal_dbm", "traffic_mb", "handover", "user_id", "movement", "app_category", "role", "app_name"]
+
+        for ti in range(self.trajectory_time_slots):
+            snapshot = self._compute_snapshot(ti)
+            json_bytes = json.dumps(snapshot, separators=(',', ':')).encode('utf-8')
+            self._snapshot_cache_json[ti] = json_bytes
+            self._snapshot_cache_gzip[ti] = _gzip.compress(json_bytes, compresslevel=6)
+
+        elapsed = time.time() - t0
+        sample_raw = len(self._snapshot_cache_json.get(0, b''))
+        sample_gz = len(self._snapshot_cache_gzip.get(0, b''))
+        total_gz_mb = sum(len(v) for v in self._snapshot_cache_gzip.values()) / 1024 / 1024
+        print(f"[DataManager] Pre-computed {self.trajectory_time_slots} snapshots in {elapsed:.1f}s")
+        print(f"[DataManager] Sample: raw={sample_raw/1024:.0f}KB, gzip={sample_gz/1024:.0f}KB, total gzip={total_gz_mb:.1f}MB")
+
+    def _compute_snapshot(self, time_index):
+        """计算单个时间片的快照数据（内部方法）。"""
+        users_data = []
+        handovers = []
+        site_agg = defaultdict(lambda: {"users": 0, "traffic": 0.0, "signal_sum": 0.0, "cells": set()})
+
+        for uid, records in self.user_trajectories.items():
+            if time_index >= len(records):
+                continue
+            rec = records[time_index]
+            if len(rec) < 12:
+                continue
+
+            lng = rec[1]
+            lat = rec[2]
+            base_id = rec[3]
+            traffic = rec[10] if rec[10] is not None else 0
+            signal = rec[11] if rec[11] is not None else -100
+
+            ho_flag = 0
+            if time_index > 0 and time_index < len(records):
+                prev_rec = records[time_index - 1]
+                if len(prev_rec) >= 4 and prev_rec[3] != base_id:
+                    ho_flag = 1
+                    old_loc = self.base_id_to_loc.get(prev_rec[3])
+                    new_loc = self.base_id_to_loc.get(base_id)
+                    if old_loc and new_loc:
+                        handovers.append([
+                            round(lng, 6), round(lat, 6),
+                            round(old_loc[0], 6), round(old_loc[1], 6),
+                            round(new_loc[0], 6), round(new_loc[1], 6)
+                        ])
+
+            move_state = rec[6] if len(rec) > 6 and rec[6] else ''
+            app_name = rec[8] if len(rec) > 8 and rec[8] else ''
+            app_cat = rec[9] if len(rec) > 9 and rec[9] else ''
+            role = ''
+            prof = self.user_profiles.get(uid)
+            if prof:
+                role = prof.get('role', '')
+            users_data.append([round(lng, 6), round(lat, 6), base_id, round(signal, 1), round(traffic, 2), ho_flag, uid, move_state, app_cat, role, app_name])
+
+            map_hex = self.numeric_to_map_hex.get(base_id)
+            if map_hex:
+                st = site_agg[map_hex]
+                st["users"] += 1
+                st["traffic"] += traffic
+                st["signal_sum"] += signal
+                st["cells"].add(base_id)
+
+        station_stats = {}
+        for hex_id, st in site_agg.items():
+            station_stats[hex_id] = {
+                "users": st["users"],
+                "traffic": round(st["traffic"], 2),
+                "avg_signal": round(st["signal_sum"] / st["users"], 1) if st["users"] > 0 else -100,
+                "cells": len(st["cells"]),
+            }
+
+        return {
+            "time_index": time_index,
+            "total_users": len(users_data),
+            "time_slots": self.trajectory_time_slots,
+            "schema": ["lng", "lat", "base_id", "signal_dbm", "traffic_mb", "handover", "user_id", "movement", "app_category", "role", "app_name"],
+            "users": users_data,
+            "station_stats": station_stats,
+            "handovers": handovers,
+            "handover_count": len(handovers),
+        }
+
+    def get_snapshot_bytes(self, time_index, accept_gzip=False):
+        """返回预计算的快照 bytes（JSON 或 Gzip），用于零计算响应。"""
+        if accept_gzip and hasattr(self, '_snapshot_cache_gzip') and time_index in self._snapshot_cache_gzip:
+            return self._snapshot_cache_gzip[time_index], 'gzip'
+        if hasattr(self, '_snapshot_cache_json') and time_index in self._snapshot_cache_json:
+            return self._snapshot_cache_json[time_index], 'json'
+        return None, None
+
     def get_simulation_snapshot(self, time_index, bbox=None):
         """
         获取指定时间片的模拟快照：所有用户的位置 + 连接信息。
+        如果无 bbox 过滤且有预计算缓存，直接返回缓存。
 
         Args:
             time_index: 时间片索引 (0 ~ trajectory_time_slots-1)
