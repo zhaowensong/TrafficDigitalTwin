@@ -142,6 +142,12 @@ def get_station_locations():
     """Returns a lightweight list of station coordinates and statistical summaries."""
     return jsonify(dm.get_station_locations())
 
+@app.route('/api/stations/time_frame')
+def get_station_time_frame():
+    """Returns all station values for a specific time index (for dynamic bar chart)."""
+    t = request.args.get('t', 0, type=int)
+    return jsonify(dm.get_station_time_frame(t))
+
 @app.route('/api/stations/detail/<station_id>')
 def get_station_detail(station_id):
     """Returns detailed metadata and stats for a specific station."""

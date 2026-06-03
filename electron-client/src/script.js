@@ -516,11 +516,17 @@ function updateGeoJSONData(map, stations, mode = 'avg', timeIndex = 0) {
     const polygonFeatures = [];
     const r = 0.00025; // Marker radius
 
+    // If time mode and we have cached time frame data, use it
+    const timeFrameData = window._timeFrameCache || {};
+
     stations.forEach(s => {
         const lng = s.loc[0], lat = s.loc[1];
-        // Note: vals removed from API response to reduce size, use val_h (avg) for all modes
+        // Use per-hour value from time frame cache when available; fallback to avg
         let valH = s.val_h || 0;
         let valC = (s.val_c !== undefined) ? s.val_c : 0;
+        if (mode === 'time' && timeFrameData[s.id] !== undefined) {
+            valH = timeFrameData[s.id];
+        }
         
         const props = { id: s.id, load_avg: valH, load_std: valC };
         
@@ -744,7 +750,7 @@ function setupInteraction(map) {
                                 .setHTML('<div style="color:#2ecc71; font-weight:bold; font-size:14px;">🌟 Best LSI Site</div>'))
                                 .addTo(map);
                             optimalMarker.togglePopup();
-                            map.flyTo({ center: result.best_loc, zoom: 16.5, speed: 1.2 });
+                            map.flyTo({ center: result.best_loc, zoom: 16.5, speed: 1.2, pitch: 0 });
                         }
                     }
                 }
@@ -996,25 +1002,34 @@ function setupTimeLapse(map, globalData) {
     const display = document.getElementById('time-display');
     if (!playBtn || !slider) return;
 
-    const totalHours = (globalData.length > 0 && globalData[0].vals) ? globalData[0].vals.length : 672;
+    const totalHours = 672;
     slider.max = totalHours - 1;
     let isPlaying = false;
     let speed = 100;
 
-    const updateTime = (val) => {
+    // Fetch time frame data from API and update map
+    const updateTime = async (val) => {
         const day = Math.floor(val / 24) + 1;
         const hour = val % 24;
         display.innerText = `Day ${day.toString().padStart(2, '0')} - ${hour.toString().padStart(2, '0')}:00`;
+        
+        // Fetch per-station values for this time index
+        try {
+            const res = await fetch(`${CONFIG.API_BASE}/stations/time_frame?t=${val}`);
+            if (res.ok) {
+                window._timeFrameCache = await res.json();
+            }
+        } catch(e) { /* use cached */ }
         
         updateGeoJSONData(map, globalData, 'time', val);
         updateChartCursor(val);
     };
 
-    const play = () => {
+    const play = async () => {
         let val = parseInt(slider.value);
         val = (val + 1) % totalHours; 
         slider.value = val;
-        updateTime(val);
+        await updateTime(val);
         if (isPlaying) animationFrameId = setTimeout(() => requestAnimationFrame(play), speed); 
     };
 
@@ -1061,12 +1076,13 @@ function setupModeToggle(map) {
             if(map.getLayer('stations-3d-pillars')) map.setLayoutProperty('stations-3d-pillars', 'visibility', 'none');
             map.easeTo({ pitch: 0, bearing: 0 });
             btn.innerHTML = '<span class="icon">🗺️</span> View: 2D';
-            if (timePanel) {
+            // Keep time panel visible if in Simulation mode (needs progress bar in 2D)
+            if (timePanel && !isSimMode) {
                 timePanel.style.display = 'none';
                 timePanel.style.opacity = '0';
             }
             const playBtn = document.getElementById('play-btn');
-            if (playBtn && playBtn.innerText === '⏸') playBtn.click();
+            if (playBtn && playBtn.innerText === '⏸' && !isSimMode) playBtn.click();
         }
     };
 }
@@ -1612,11 +1628,19 @@ function setupSimulationMode(map) {
             simBtn.classList.add('predict-on');
             simBtn.innerHTML = '<span class="icon">\ud83c\udf10</span> Sim: ON';
 
-            // Switch to 2D
-            const pitch = map.getPitch();
-            if (pitch > 10) {
-                const viewBtn = document.getElementById('view-toggle');
-                if (viewBtn) viewBtn.click();
+            // Switch to 2D directly (don't use viewBtn.click which blocks in AI mode)
+            map.easeTo({ pitch: 0, bearing: 0 });
+            if (map.getLayer('stations-3d-pillars')) {
+                map.setLayoutProperty('stations-3d-pillars', 'visibility', 'none');
+            }
+            const viewBtn2 = document.getElementById('view-toggle');
+            if (viewBtn2) viewBtn2.innerHTML = '<span class="icon">🗺️</span> View: 2D';
+
+            // Ensure time panel (progress bar) is visible in 2D simulation
+            const timePanel = document.querySelector('.time-panel');
+            if (timePanel) {
+                timePanel.style.display = 'flex';
+                timePanel.style.opacity = '1';
             }
 
             simControls.style.display = 'block';
